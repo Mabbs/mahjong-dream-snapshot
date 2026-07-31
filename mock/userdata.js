@@ -135,6 +135,14 @@
     return [key, data, ct];
   };
 
+  /** wrapper f24 的真实结构（对照正式服抓包 100012 确认）：
+   *    f24 = DataChangeNotify { 1: UserDataChange }
+   *  即 UserDataChange 外面还套了一层 f1，早期版本漏掉了这层，
+   *  客户端解不出增量 -> 保存类操作全部静默失败（UI 不刷新 / 回滚）。 */
+  UserData.prototype.changeNotify = function (changes) {
+    return P.W().s(1, this.changePacket(changes)).bytes();
+  };
+
   /** changes: { dtype: [[key, data, changeType], ...] } -> UserDataChange bytes */
   UserData.prototype.changePacket = function (changes) {
     var w = P.W();
@@ -200,6 +208,8 @@
     }
     row = P.setBytes(row, 2, w.bytes());
     var ch = this.setRow(DT_BASIC_INFO, '0', row);
+    // 正式服每换一项 version +1（一次请求带 N 项就 +N），这里对齐
+    if (pairs.length > 1) this.modules[DT_BASIC_INFO].version += pairs.length - 1;
     var out = {};
     out[DT_BASIC_INFO] = [ch];
     return out;

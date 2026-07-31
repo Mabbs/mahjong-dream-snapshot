@@ -89,7 +89,7 @@
   /** 把数据变更增量塞进响应帧的 wrapper f24。 */
   function withChange(midRsp, changes, body) {
     if (!changes) return [[midRsp, body || new Uint8Array(0), 1, null]];
-    var pkt = USERDATA.changePacket(changes);
+    var pkt = USERDATA.changeNotify(changes);
     for (var dt in changes) {
       if (!Object.prototype.hasOwnProperty.call(changes, dt)) continue;
       log('     [DataChange] %s(%s) v=%d %d 行',
@@ -133,22 +133,36 @@
     return withChange(100205, changes);
   };
 
-  /** 100011 SelectEquipmentInUseRequest { 1: map<DataType,int> } -> 100012
-   *  换头像 / 换出战雀士 / 换牌桌装扮都走这个。 */
+  /** 100011 SelectEquipmentInUseRequest { 1: repeated Entry{1:DataType,2:Value} } -> 100012
+   *  换头像 / 换出战雀士 / 换皮肤 / 切场景(背景+内景) 全都走这个。
+   *
+   *  对照正式服抓包（capture/live4）确认的真实回包形态：
+   *    body = SelectEquipmentInUseResponse { 2: <原样回显请求 payload> }
+   *    f24  = DataChangeNotify { 1: UserDataChange{ DT1 整行, ct=MODIFY, ver+N } }
+   *  之前 body 为空 + f24 少套一层 f1，客户端认不了，所以 UI 切不动。 */
   HANDLERS[100011] = function (sess, payload) {
     var pairs = [];
     var fs = P.parse(payload);
     for (var i = 0; i < fs.length; i++) {
       if (fs[i][0] !== 1 || fs[i][1] !== 2) continue;
-      var e = P.dict(fs[i][2]);
-      if (e[1] !== undefined) pairs.push([e[1], e[2] || 0]);
+      var inner = P.parse(fs[i][2]);
+      var dt = null, val = 0;
+      for (var k = 0; k < inner.length; k++) {
+        if (inner[k][0] === 1) dt = inner[k][2];
+        else if (inner[k][0] === 2) val = inner[k][2];
+      }
+      if (dt !== null) pairs.push([dt, val]);
     }
-    var changes = USERDATA.selectEquipment(pairs);
-    var desc = pairs.map(function (p) {
+    log('     使用中装备 -> %s', pairs.map(function (p) {
       return (U.DT_NAMES[p[0]] || '?') + '(' + p[0] + ')=' + p[1];
-    }).join(', ');
-    log('     使用中装备 -> %s', desc);
-    return withChange(100012, changes);
+    }).join(', '));
+
+    var changes = USERDATA.selectEquipment(pairs);
+    // 回显：把请求 payload 原封不动塞进 f2（与正式服字节级一致）
+    var body = payload && payload.length
+      ? P.W().s(2, payload).bytes()
+      : new Uint8Array(0);
+    return withChange(100012, changes, body);
   };
 
   /** 20007 GetTableList -> 20008 空牌桌列表（离线下没有真实房间） */
