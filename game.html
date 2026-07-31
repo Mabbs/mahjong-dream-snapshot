@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>Unity WebGL Player | 激情麻将</title>
+    <link rel="shortcut icon" href="TemplateData/favicon.ico">
+    <link rel="stylesheet" href="TemplateData/style.css">
+
+    <!-- ==== 浏览器内 Mock 服务端：必须在 offline-patch.js 之前加载 ==== -->
+    <script type="text/javascript" src="mock/proto.js"></script>
+    <script type="text/javascript" src="mock/data.js"></script>
+    <script type="text/javascript" src="mock/userdata.js"></script>
+    <script type="text/javascript" src="mock/server.js"></script>
+
+    <!-- ==== 离线补丁：WebSocket / HTTP 拦截 ==== -->
+    <script type="text/javascript" src="offline-patch.js"></script>
+
+    <script>
+        // Stub QuickSDK 全局，避免 _init 时 QuickSDK 未定义导致 PlayerLoop 递归崩溃
+        (function(){
+          window.QuickSDK = {
+            // 真实签名 init(productCode, productKey, debug, callback)
+            init: function(productCode, productKey, debug, cb){
+              console.log('[Mock] QuickSDK.init', productCode, productKey, debug);
+              try { setTimeout(function(){ if (typeof cb==='function') cb({ status: true }); }, 50); } catch(e) {}
+            },
+            // 真实签名 login(callback)
+            login: function(cb){
+              console.log('[Mock] QuickSDK.login');
+              try { setTimeout(function(){
+                if (typeof cb==='function') cb({
+                  status: true,
+                  data: { uid: '1790658', token: 'mock-token', username: 'sqi151n3s19' }
+                });
+              }, 50); } catch(e) {}
+            },
+            logout: function(cb){ if(typeof cb==='function') cb({code:0}); },
+            pay: function(o,cb){ if(typeof cb==='function') cb({code:0}); },
+            exit: function(){},
+            getUserInfo: function(){ return {uid:'1790658',token:'mock-token'}; },
+            getChannelInfo: function(){ return {channelCode:'28503',productCode:'79852572180222061492470865042339'}; },
+            setCallback: function(){},
+            on: function(){},
+            off: function(){},
+            config: function(){},
+            // 游戏在登录成功后调用
+            uploadGameRoleInfo: function(roleInfo, cb){ try { if(typeof cb==='function') cb({code:0}); } catch(e){} },
+            // 其他可能的回调方法
+            reportEvent: function(){}, submitExtraData: function(){}, callNative: function(){},
+          };
+          // 任何未声明的方法都返回 success
+          window.QuickSDK = new Proxy(window.QuickSDK, {
+            get(t, k) { if (k in t) return t[k]; return function(){ try { if(arguments.length>0 && typeof arguments[arguments.length-1]==='function') arguments[arguments.length-1]({code:0, status:true}); } catch(e){} }; }
+          });
+        })();
+    </script>
+    
+  </head>
+  <body style="position: absolute;width:100%; height: 100%;">
+    <div id="unity-container" class="unity-desktop">
+      <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
+      <div id="unity-loading-bar">
+        <div id="unity-logo"></div>
+        <div id="unity-progress-bar-empty">
+          <div id="unity-progress-bar-full"></div>
+        </div>
+      </div>
+    </div>
+    <script>
+
+      var container = document.querySelector("#unity-container");
+      var canvas = document.querySelector("#unity-canvas");
+      var loadingBar = document.querySelector("#unity-loading-bar");
+      var progressBarFull = document.querySelector("#unity-progress-bar-full");
+      //var fullscreenButton = document.querySelector("#unity-fullscreen-button");
+      var warningBanner = document.querySelector("#unity-warning");
+
+      // Shows a temporary message banner/ribbon for a few seconds, or
+      // a permanent error message on top of the canvas if type=='error'.
+      // If type=='warning', a yellow highlight color is used.
+      // Modify or remove this function to customize the visually presented
+      // way that non-critical warnings and error messages are presented to the
+      // user.
+      function unityShowBanner(msg, type) {
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px;';
+        else {
+          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
+          setTimeout(function() {
+            warningBanner.removeChild(div);
+            updateBannerVisibility();
+          }, 5000);
+        }
+        updateBannerVisibility();
+      }
+      
+
+      var buildUrl = "Build";
+      var loaderUrl = buildUrl + "/mj-h5.loader.js";
+      var config = {
+        dataUrl: buildUrl + "/mj-h5.data.unityweb",
+        frameworkUrl: buildUrl + "/mj-h5.framework.js.unityweb",
+        codeUrl: buildUrl + "/mj-h5.wasm.unityweb",
+        symbolsUrl: buildUrl + "/mj-h5.symbols.json.unityweb",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "DefaultCompany",
+        productName: "激情麻将",
+        productVersion: "1.1.107241726.0",
+        showBanner: unityShowBanner,
+      };
+
+      // By default, Unity keeps WebGL canvas render target size matched with
+      // the DOM size of the canvas element (scaled by window.devicePixelRatio)
+      // Set this to false if you want to decouple this synchronization from
+      // happening inside the engine, and you would instead like to size up
+      // the canvas DOM size and WebGL render target sizes yourself.
+      // config.matchWebGLToCanvasSize = false;
+
+        var isInPhone = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+      if (isInPhone) {
+        // Mobile device style: fill the whole browser client area with the game canvas:
+
+        var meta = document.createElement('meta');
+        meta.name = 'viewport';
+        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, viewport-fit=cover';
+        document.getElementsByTagName('head')[0].appendChild(meta);
+        container.className = "unity-mobile";
+        canvas.className = "unity-mobile";
+
+        // To lower canvas resolution on mobile devices to gain some
+        // performance, uncomment the following line:
+        config.devicePixelRatio = 2.4;
+
+
+      } else {
+        // Desktop style: Render the game canvas in a window that can be maximized to fullscreen:
+
+        canvas.style.width = "960px";
+        canvas.style.height = "600px";
+      }
+
+      loadingBar.style.display = "block";
+
+      var gameInstance = null;
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      var currentProgress = 0;
+      var bootingUpTime = performance.now();
+      console.time("h5 Startup Time");
+      console.timeLog("h5 Startup Time","game html script start");
+      script.onload = () => {
+          createUnityInstance(canvas, config, (progress) => {
+            if (progress === 1)
+            {
+              currentProgress =  100;
+              progressBarFull.style.width = 100 + "%";
+
+            }
+            else {
+              currentProgress =  50 * progress;
+              progressBarFull.style.width = 50 * progress + "%";
+            }
+          }).then((unityInstance) => {
+            console.timeLog("h5 Startup Time","Create unityInstance done ");
+            bootingUpTime = performance.now() - bootingUpTime;
+            console.log("h5 Startup Time 2",bootingUpTime);
+            gameInstance = unityInstance;
+            clearInterval(time);
+            progressBarFull.style.width = 100 + "%";
+            loadingBar.style.display = "none";
+          }).catch((message) => {
+            alert(message);
+          });
+      };
+
+      var time = setInterval(() => {
+        // 进度条慢慢增加
+        if(currentProgress >= 45 && currentProgress < 100){
+          currentProgress = currentProgress + 1;
+          progressBarFull.style.width = currentProgress + "%";
+        }
+      }, 50);
+      document.body.appendChild(script);
+
+      function receiveOrientationFromUnity(param) {
+        console.log("Received game html from Unity: " + param);
+        const message = { action: 'receiveOrientationFromUnity', value: param };
+        window.parent.postMessage(message , '*');
+      }
+
+      
+      function getH5BootingUpTime(){
+        console.log("h5 get BootingUp Time",bootingUpTime);
+        return bootingUpTime;
+      }
+
+      function unityContainerResize(){
+        document.body.offsetHeight;
+        var w =  Math.min(window.innerWidth, document.body.clientWidth),
+        h = Math.min(window.innerHeight, document.body.clientHeight),
+        ratio = 21/9,
+        r = w/h;
+        var setW = w, setH = h, setTop = 0, setLeft = 0;
+        if(r > ratio){
+          setW = h * ratio;
+          setLeft = (w - setW) / 2;
+        }
+        else  if (r >= 1) {
+            setW = w;
+            setH = h;
+        }
+        else {
+          setH = w;
+          setTop = (h - setH) / 2;
+        }
+        
+        console.log("source size window-", window.innerWidth, ":", window.innerHeight, ", body-", document.body.clientWidth, ":", document.body.clientHeight);
+        console.log("fianl size ", setLeft, ":", setTop, "-", w, ":", h);
+        
+        canvas.style.width = (setW || w) + 'px';
+        canvas.style.height = (setH || h) + 'px';
+        canvas.style.top = (setTop || 0) + 'px';
+        canvas.style.left = (setLeft || 0) + 'px';
+        
+        if (isInPhone) {
+            container.style.width = (setW || w) + 'px';
+            container.style.height = (setH || h) + 'px';
+            container.style.top = (setTop || 0) + 'px';
+            container.style.left = (setLeft || 0) + 'px';
+        }
+      }
+
+      window.addEventListener('message', function(event) {
+        if (event.data === 'refreshMethod') {
+          unityContainerResize();
+        }
+      });
+
+
+      // window.addEventListener('resize',unityContainerResize)
+      unityContainerResize()
+
+    </script>
+  </body>
+</html>
