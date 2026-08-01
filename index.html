@@ -59,8 +59,11 @@
   var Frame = document.getElementById("Frame");
 
   var setOrientation = 1
-
-  Frame.src = "game.html?undefined";
+  if (window.location.search == '?intl') {
+    Frame.src = "game.html?uid=1&sign=19a5aaae0d826f5ac640a4dbfafb1612";
+  } else {
+    Frame.src = "game.html?undefined";
+  }
 
   function unityRefreshOrientation(){
     document.body.offsetHeight;

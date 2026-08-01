@@ -15,6 +15,7 @@
 
     <!-- ==== 离线补丁：WebSocket / HTTP 拦截 ==== -->
     <script type="text/javascript" src="offline-patch.js"></script>
+    <script type="text/javascript" src="spark-md5.js"></script>
 
     <script>
         // Stub QuickSDK 全局，避免 _init 时 QuickSDK 未定义导致 PlayerLoop 递归崩溃
@@ -53,6 +54,7 @@
           window.QuickSDK = new Proxy(window.QuickSDK, {
             get(t, k) { if (k in t) return t[k]; return function(){ try { if(arguments.length>0 && typeof arguments[arguments.length-1]==='function') arguments[arguments.length-1]({code:0, status:true}); } catch(e){} }; }
           });
+          window.H5SDK = window.QuickSDK;
           window.QuickService = new Proxy({}, {
             get(target, prop) {
               if (prop === 'show') return () => {};
@@ -107,20 +109,35 @@
         updateBannerVisibility();
       }
       
-
-      var buildUrl = "Build";
-      var loaderUrl = buildUrl + "/mj-h5.loader.js";
-      var config = {
-        dataUrl: buildUrl + "/mj-h5.data.unityweb",
-        frameworkUrl: buildUrl + "/mj-h5.framework.js.unityweb",
-        codeUrl: buildUrl + "/mj-h5.wasm.unityweb",
-        symbolsUrl: buildUrl + "/mj-h5.symbols.json.unityweb",
-        streamingAssetsUrl: "StreamingAssets",
-        companyName: "DefaultCompany",
-        productName: "激情麻将",
-        productVersion: "1.1.107241726.0",
-        showBanner: unityShowBanner,
-      };
+      if (window.location.search == '?undefined') {
+        var buildUrl = "Build";
+        var loaderUrl = buildUrl + "/mj-h5.loader.js";
+        var config = {
+          dataUrl: buildUrl + "/mj-h5.data.unityweb",
+          frameworkUrl: buildUrl + "/mj-h5.framework.js.unityweb",
+          codeUrl: buildUrl + "/mj-h5.wasm.unityweb",
+          symbolsUrl: buildUrl + "/mj-h5.symbols.json.unityweb",
+          streamingAssetsUrl: "StreamingAssets",
+          companyName: "DefaultCompany",
+          productName: "激情麻将",
+          productVersion: "1.1.107241726.0",
+          showBanner: unityShowBanner,
+        };
+      } else {
+        var buildUrl = "Build_intl";
+        var loaderUrl = buildUrl + "/mj-h5.loader.js";
+        var config = {
+          dataUrl: buildUrl + "/mj-h5.data.unityweb",
+          frameworkUrl: buildUrl + "/mj-h5.framework.js.unityweb",
+          codeUrl: buildUrl + "/mj-h5.wasm.unityweb",
+          symbolsUrl: buildUrl + "/mj-h5.symbols.json.unityweb",
+          streamingAssetsUrl: "StreamingAssets",
+          companyName: "DefaultCompany",
+          productName: "Mahjong Dream",
+          productVersion: "1.1.107211826.0",
+          showBanner: unityShowBanner,
+        };
+      }
 
       // By default, Unity keeps WebGL canvas render target size matched with
       // the DOM size of the canvas element (scaled by window.devicePixelRatio)

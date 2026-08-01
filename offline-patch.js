@@ -15,7 +15,7 @@
   var LOCAL = [location.host];
 
   // 需要拦截并返回空响应的外部域
-  var BLOCK = /(qsdkapi-q\.ggbak\.com|kfapi\.quickapi\.net|playgame\.quickjoy\.com|tb16888-\d\.mahjongdreamone\.com|dumplog\.mahjongdreamone\.com|aso\.mahjongdreamone\.com)/;
+  var BLOCK = /(qsdkapi-q\.ggbak\.com|kfapi\.quickapi\.net|playgame\.quickjoy\.com|tb16888-\d\.mahjongdreamone\.com|dumplog\.mahjongdreamone\.com|aso\.mahjongdreamone\.com|mjdream\.com)/;
 
   // 需要改写到本地镜像的外部资源域
   var REWRITE = [
