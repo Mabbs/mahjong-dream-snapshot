@@ -53,6 +53,13 @@
           window.QuickSDK = new Proxy(window.QuickSDK, {
             get(t, k) { if (k in t) return t[k]; return function(){ try { if(arguments.length>0 && typeof arguments[arguments.length-1]==='function') arguments[arguments.length-1]({code:0, status:true}); } catch(e){} }; }
           });
+          window.QuickService = new Proxy({}, {
+            get(target, prop) {
+              if (prop === 'show') return () => {};
+              if (prop === 'getServiceUrl') return () => '';
+              return () => QuickService;
+            }
+          });
         })();
     </script>
     
