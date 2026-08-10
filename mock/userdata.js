@@ -24,6 +24,7 @@
   var DT_HEAD = 11;
   var DT_MAHJONG_WARRIOR = 26;
   var DT_MAHJONG_WARRIOR_SKIN = 37;
+  var DT_SIGN_IN = 34;   // 签到：row "0".f1 = 最后签到 Unix 时间戳，跨日判定看它
 
   var DT_NAMES = {
     1: 'BasicInfo', 2: 'GameSetting', 3: 'RankingMatchInfo', 4: 'HighlightRecord',
@@ -215,12 +216,86 @@
     return out;
   };
 
+  // ---------------------------------------------------------- 跨日签到
+  /** 跨日签到：把 SignIn(34) row "0" 的 f1（最后签到时间戳）改成「现在」，
+   *  其余字段（f2 签到历史 / f3 起始日期）原样保留。返回 {34:[[key,data,MODIFY]]}
+   *  增量，由调用方经 wrapper f24 回推，使客户端跨日判定清除、停止 Task 高频轮询。
+   *
+   *  根因：快照 SignIn.f1=1786266336(2026-08-09) 已跨日，客户端每进大厅就检测到
+   *  「今天还没签到」，于是发 KclientSignInReq(100620) 并周期性轮询 Task(39) 等
+   *  跨日刷新；之前 100620 没有 handler（auto-ok 空包），客户端收不到签到完成信号，
+   *  轮询死循环。这里把签到时间戳刷成今天即可让它收手。 */
+  UserData.prototype.dailySignIn = function () {
+    var key = '0';
+    var row = this.row(DT_SIGN_IN, key);
+    if (!row) return null;
+    var now = Math.floor(Date.now() / 1000);
+    var w = P.W();
+    var found = false;
+    var fs = P.parse(row);
+    for (var i = 0; i < fs.length; i++) {
+      var f = fs[i][0], wt = fs[i][1], v = fs[i][2];
+      if (f === 1 && wt === 0) { w.v(1, now); found = true; }
+      else P.reencode(w, f, wt, v);
+    }
+    if (!found) w.v(1, now);
+    var ch = this.setRow(DT_SIGN_IN, key, w.bytes());
+    var out = {};
+    out[DT_SIGN_IN] = [ch];
+
+    // 真实服签到后 f24 推送 DT34+DT39+DT6+DT38，这里同步推送 DT39 以避免客户端因签到后
+    // 任务未更新而反复查 DT39（参见 server.js 100141 刷屏检测）
+    var taskMod = this.modules[39];
+    if (taskMod) {
+      taskMod.version += 3;
+      out[39] = [[taskMod.order[0] || '0', taskMod.rows[taskMod.order[0]] || new Uint8Array(0), MODIFY]];
+    }
+
+    return out;
+  };
+
+  /** 模块版本+1（数据不变），返回 f24 增量。 */
+  UserData.prototype.bumpModule = function (dtype) {
+    var m = this.modules[dtype];
+    if (!m) return null;
+    var key = m.order.length ? m.order[0] : '0';
+    var data = m.rows[key] || new Uint8Array(0);
+    m.version += 1;
+    return this._makeChange(dtype, key, data, MODIFY);
+  };
+
+  UserData.prototype._makeChange = function (dtype, key, data, ct) {
+    var out = {};
+    out[dtype] = [[String(key), data, ct]];
+    return out;
+  };
+
+  /** 合并 GameSetting 到 DT2，版本+1，返回 f24 增量。 */
+  UserData.prototype.updateGameSetting = function (gameSetting) {
+    var row = this.row(2, '0');
+    if (!row) return null;
+    var fs;
+    try { fs = P.parse(gameSetting); } catch (e) { return null; }
+    var newRow = row;
+    for (var i = 0; i < fs.length; i++) {
+      var fn = fs[i][0], wt = fs[i][1], v = fs[i][2];
+      if (wt === 2) {
+        if (v && v.length) newRow = P.setBytes(newRow, fn, v);
+      } else if (wt === 0) {
+        newRow = P.setVarint(newRow, fn, v);
+      }
+    }
+    var ch = this.setRow(2, '0', newRow);
+    return this._makeChange(2, ch[0], ch[1], ch[2]);
+  };
+
   MJ.userdata = {
     UserData: UserData, Module: Module,
     DT_NAMES: DT_NAMES,
     MODIFY: MODIFY, ADD: ADD, DELETE: DELETE,
     DT_BASIC_INFO: DT_BASIC_INFO, DT_HEAD: DT_HEAD,
     DT_MAHJONG_WARRIOR: DT_MAHJONG_WARRIOR,
-    DT_MAHJONG_WARRIOR_SKIN: DT_MAHJONG_WARRIOR_SKIN
+    DT_MAHJONG_WARRIOR_SKIN: DT_MAHJONG_WARRIOR_SKIN,
+    DT_SIGN_IN: DT_SIGN_IN
   };
 })(typeof window !== 'undefined' ? window : globalThis);
