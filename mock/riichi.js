@@ -8102,6 +8102,7 @@
       this.scores = null;
       this.xunNum = 0;
       this._pending = null;
+      this._processing = false; // 动作执行中标记（防重复包重放）
       this._bufferedDraw = null;
       this._bufferedClaim = null;
       this._prepareWaiter = null;
@@ -8340,6 +8341,7 @@
       }
       let action, card;
       if (!aiControlled) {
+        this._processing = false; // 即将等待人类输入，允许缓存合法早到响应
         const payload = await this.waitHuman("draw");
         action = payload.action != null ? payload.action : PlayAction.Normal;
         card = payload.card != null ? payload.card : p.drawnTile;
@@ -8349,7 +8351,7 @@
         card = d.card;
         await this._d(this.T.think);
       }
-      await this.processTurnAction(seat, action, card);
+      await this.processTurnAction(seat, action, card, drew);
     }
     // 手牌 14 张时的可选动作
     turnActions(seat, drew) {
@@ -8357,7 +8359,7 @@
       const acts = [PlayAction.Normal];
       if (drew && this.canTsumo(p)) acts.push(PlayAction.Hu);
       if (!p.riichi && p.menzen && this.canRiichi(p)) acts.push(PlayAction.Riichi);
-      if (drew && this.kanCount < 4 && this.remain > 0) {
+      if (drew && this.kanCount < 4 && this.remain > 1) {
         if (this.concealedQuadTile(p) != null) acts.push(PlayAction.AnGang);
         if (!p.riichi && this.addedKanTile(p) != null) acts.push(PlayAction.PengGang);
       }
@@ -8533,8 +8535,10 @@
       return out.slice(0, 60);
     }
     // ================= 处理行动 =================
-    async processTurnAction(seat, action, card) {
+    async processTurnAction(seat, action, card, drew) {
       const p = this.players[seat];
+      this._processing = true; // 动作执行中：此期间到达的包视为重复包丢弃
+      this._bufferedDraw = null; this._bufferedClaim = null; // 清空上一动作的残留缓冲（防重复包重放）
       if (action === PlayAction.Hu) {
         await this.winTsumo(seat);
         return;
@@ -8544,11 +8548,16 @@
         return;
       }
       if (action === PlayAction.AnGang) {
-        await this.doKan(seat, card, "ankan");
+        // 校验动作合法性，拒绝重复包/非法动作（不进 doKan，落到下方弃牌兜底）
+        if (this.turnActions(seat, drew).includes(PlayAction.AnGang)) {
+          await this.doKan(seat, card, "ankan");
+        }
         return;
       }
       if (action === PlayAction.PengGang) {
-        await this.doKan(seat, card, "kakan");
+        if (this.turnActions(seat, drew).includes(PlayAction.PengGang)) {
+          await this.doKan(seat, card, "kakan");
+        }
         return;
       }
       if (action === PlayAction.BaBei) {
@@ -8631,7 +8640,7 @@
       if (this.canRon(p, card)) acts.push(PlayAction.Hu);
       if (!p.riichi) {
         const cnt = p.hand.filter((t) => kindOf2(t) === kindOf2(card)).length;
-        if (cnt >= 3 && this.kanCount < 4 && this.remain > 0) acts.push(PlayAction.MingGang);
+        if (cnt >= 3 && this.kanCount < 4 && this.remain > 1) acts.push(PlayAction.MingGang);
         if (cnt >= 2 && this.remain > 0) acts.push(PlayAction.Peng);
         if (!this.sanma && seat === this.nextSeat(discarderSeat) && this.remain > 0) {
           if (this.chiTiles(p, card)) acts.push(PlayAction.Chi);
@@ -8671,6 +8680,7 @@
     async resolveClaims(discarderSeat, card, canQiang) {
       const all = [];
       if (!this.autoHuman && this.players[0].isHuman && canQiang[0] && canQiang[0].length) {
+        this._processing = false; // 即将等待人类鸣牌输入，允许缓存合法早到响应
         const payload = await this.waitHuman("claim");
         if (payload && payload.action != null && payload.action !== PlayAction.Guo) {
           all.push({ seat: 0, action: payload.action, otherCards: payload.otherCards || [] });
@@ -8701,6 +8711,8 @@
     }
     async executeClaim(seat, action, card, discarderSeat, otherCards) {
       const p = this.players[seat];
+      this._processing = true; // 鸣牌执行中：此期间到达的包视为重复包丢弃
+      this._bufferedDraw = null; this._bufferedClaim = null; // 清空上一动作的残留缓冲（防重复包重放）
       const donor = this.players[discarderSeat];
       if (action === PlayAction.Hu) {
         await this.winRon(seat, discarderSeat, card);
@@ -8711,6 +8723,8 @@
       this.firstGoAround = false;
       for (const q of this.players) q.tempFuriten = false;
       if (action === PlayAction.MingGang) {
+        // 校验合法性，拒绝重复包/非法动作（不进 doKan）
+        if (!this.claimActions(seat, discarderSeat, card).includes(PlayAction.MingGang)) return;
         const used2 = this.takeTiles(p, card, 3);
         p.melds.push({ type: "kan", tiles: [...used2, card], from: discarderSeat });
         p.menzen = false;
@@ -9334,7 +9348,8 @@
         const r = this._pending.resolve;
         this._pending = null;
         r(payload || {});
-      } else {
+      } else if (!this._processing) {
+        // 仅在「非动作执行中」缓冲（合法早到响应）；动作执行中的包视为重复包直接丢弃
         this._bufferedDraw = payload || {};
       }
     }
@@ -9343,7 +9358,7 @@
         const r = this._pending.resolve;
         this._pending = null;
         r(payload || {});
-      } else {
+      } else if (!this._processing) {
         this._bufferedClaim = payload || {};
       }
     }

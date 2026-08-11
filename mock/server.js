@@ -979,16 +979,29 @@
     if (this.readyState === CLOSED || this.readyState === CLOSING) return;
     this.readyState = CLOSING;
     var self = this;
+    // 对局进行中：把关闭伪装成「网络异常掉线」(1006) 而非「服务端优雅关闭」(1000)。
+    // 客户端(BestHTTP)对 1000 "Bye!" 的解读是「服务端主动结束会话」→ 重连后直接发
+    // 20102 结算退出对局；对 1006 的解读是「网络抖动」→ 重连后发 20162 询问并恢复
+    // 对局（对照真实服抓包 capture/dongfeng1 帧 110-124：断线重连后客户端发 20162，
+    // 服务端回 TableInfo，随即重放 20018 恢复牌局）。两种情况下引擎都保留，区别只
+    // 在于让客户端走「恢复」分支而不是「结算退出」分支。
+    var activeGame = !!(
+      self._session && self._session.tableId &&
+      self._session.riichi && !self._session.riichi.matchOver
+    );
+    var closeCode = activeGame ? 1006 : (code || 1000);
+    var closeReason = activeGame ? '' : (reason || '');
+    var closeClean = !activeGame;
     setTimeout(function () {
       self.readyState = CLOSED;
       // 不销毁会话：保留 riichi 引擎，客户端重连时复用（避免对局中断）
       _lastSession = self._session;
       self._session.suspend();
       self._emit('close', {
-        type: 'close', code: code || 1000, reason: reason || '',
-        wasClean: true, target: self
+        type: 'close', code: closeCode, reason: closeReason,
+        wasClean: closeClean, target: self
       });
-      log('[mock] 虚拟连接已关闭 code=%s reason=%s（引擎已保留）', code || 1000, reason || '');
+      log('[mock] 虚拟连接已关闭 code=%s reason=%s（引擎已保留）', closeCode, closeReason);
     }, 0);
   };
 
