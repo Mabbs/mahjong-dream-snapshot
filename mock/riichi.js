@@ -8177,9 +8177,13 @@
       const wall = shuffle(tiles, this.rng);
       const dead = wall.splice(wall.length - 14, 14);
       this.deadWall = dead;
-      this.replacements = [dead[0], dead[1], dead[2], dead[3]];
-      this.doraIndicators = [dead[4]];
-      this.uraIndicators = [dead[5]];
+      // 岭上牌数量：四麻4张、三麻8张（三麻拔北/杠共需8张岭上牌，王牌总数仍14张）
+      const rinLen = this.sanma ? 8 : 4;
+      this.replacements = dead.slice(0, rinLen);
+      // 初始宝牌指示牌位置：四麻 dead[4]；三麻前8张是岭上，故 dead[8]
+      const baoBase = this.sanma ? rinLen : 4;
+      this.doraIndicators = [dead[baoBase]];
+      this.uraIndicators = [dead[baoBase + 1]];
       this._pendingBaoPreCard = 0;
       this.wall = wall;
       this.remain = wall.length;
@@ -8364,7 +8368,7 @@
         if (!p.riichi && this.addedKanTile(p) != null) acts.push(PlayAction.PengGang);
       }
       if (drew && !this.isAiSeat(p) && this.canJiuZhongJiuPai(p)) acts.push(PlayAction.JiuZhongJiuLiuJu);
-      if (this.sanma && this.northInHand(p) != null && this.replacements.length && this.remain > 0) {
+      if (this.sanma && this.northInHand(p) != null && this.replacements.length && this.remain > 1) {
         acts.push(PlayAction.BaBei);
       }
       return acts;
@@ -8563,7 +8567,7 @@
       if (action === PlayAction.BaBei) {
         const d = card != null ? decodeId(card) : null;
         const north = d && d.suit === 4 && d.rank === 4 && p.hand.includes(card) ? card : this.northInHand(p);
-        if (north != null) {
+        if (north != null && this.turnActions(seat, drew).includes(PlayAction.BaBei)) {
           await this.doBaBei(seat, north);
           return;
         }
@@ -8828,10 +8832,12 @@
     }
     revealKanDora() {
       const i = this.kanCount;
-      if (i >= 1 && i <= 4 && this.deadWall[4 + 2 * i] != null) {
-        const ind = this.deadWall[4 + 2 * i];
+      const baoBase = this.sanma ? 8 : 4;
+      const maxI = this.sanma ? 2 : 4;
+      if (i >= 1 && i <= maxI && this.deadWall[baoBase + 2 * i] != null) {
+        const ind = this.deadWall[baoBase + 2 * i];
         this.doraIndicators.push(ind);
-        this.uraIndicators.push(this.deadWall[5 + 2 * i]);
+        this.uraIndicators.push(this.deadWall[baoBase + 1 + 2 * i]);
         this._pendingBaoPreCard = ind;
       }
     }
@@ -9156,17 +9162,31 @@
     decideGameOver(dealerContinues, scores) {
       if (scores.some((s) => s < 0)) return true;
       if (this.handIndex + 1 >= this.maxHands) return true;
-      const isAllLast = this.juNum + 1 >= this.playersN || this.roundWind >= 2;
-      if (!isAllLast) return false;
-      if (!dealerContinues) return true;
-      if (this.roundWind >= 2) return true;
-      const ds = scores[this.dealerSeat];
-      const isTop = scores.every((s) => s <= ds);
+      // 1位必要点数：四麻 30000 / 三麻 40000
+      const necessary = this.playersN === 3 ? 40000 : 30000;
+      const top = Math.max.apply(null, scores);
+      const topMeets = top >= necessary;
+      const isAllLast = this.juNum + 1 >= this.playersN;
       const wind = ["", "\u4E1C", "\u5357"][this.roundWind] || "?";
       const ju = this.juNum + 1;
-      console.log("[riichi] decideGameOver: " + wind + ju + " \u5E84\u5BB6=seat" + this.dealerSeat + " (score=" + ds + ") scores=" + JSON.stringify(scores) + " isTop=" + isTop + " \u2192 " + (isTop ? "\u7EC8\u5C40" : "\u5357\u5165"));
-      if (isTop) return true;
-      return false;
+      // 南场（roundWind>=2）非末局：只要顶部达成必要点即结算
+      if (this.roundWind >= 2 && !isAllLast && topMeets) {
+        console.log("[riichi] decideGameOver: " + wind + ju + " 顶部=" + top + ">=必要点" + necessary + " → 南场达成条件，结算");
+        return true;
+      }
+      if (!isAllLast) return false;
+      // 末局
+      if (!dealerContinues) {
+        console.log("[riichi] decideGameOver: " + wind + ju + " 庄家未连庄 → 终局");
+        return true;
+      }
+      if (this.roundWind >= 2) {
+        console.log("[riichi] decideGameOver: " + wind + ju + " 南4末局 → 强行结算");
+        return true;
+      }
+      // 东 All Last：达成必要点则终局，否则南入（连庄进南场）
+      console.log("[riichi] decideGameOver: " + wind + ju + " 庄家=seat" + this.dealerSeat + " 顶部=" + top + " 必要点=" + necessary + " 达成=" + topMeets + " → " + (topMeets ? "\u7EC8\u5C40" : "\u5357\u5165"));
+      return topMeets;
     }
     async finishHand(gameOver, dealerContinues, scores) {
       this.scores = scores.slice();
@@ -9177,7 +9197,8 @@
           this.roundWind = 2;
           this.juNum = 0;
           this.honba = 0;
-          this.dealerSeat = 0;
+          // 南入：本场 All Last 庄家未登顶才延长，且 dealerContinues=true（连庄），
+          // 故庄家必须保持（连庄进南场），不能重置为 0，否则会变成下家坐庄。
         }
       } else {
         this.honba = 0;
