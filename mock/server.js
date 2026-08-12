@@ -547,13 +547,26 @@
       uid: 10001, nick: '鹫巢岩', frame: 2001, title: 3001, level: 8, pt: 92
     },
     {
-      uid: 10002, nick: '天', frame: 2001, title: 3001, level: 4, pt: 0
+      uid: 10002, nick: '天贵史', frame: 2001, title: 3001, level: 4, pt: 0
     }
   ];
 
-  /** 可用雀士 ID 池（用于 AI 随机分配） */
-  var WARRIOR_POOL = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
   var BANG_POOL = [140001, 140002, 140003, 140004, 140006, 140007, 140009];
+
+  /** 雀士 → 皮肤/头像 对应关系（皮肤与头像成对，随机抽一组）。
+   *  数据来源：角色,皮肤,头像 对应表。键即为可用雀士 ID 池。 */
+  var WARRIOR_TABLE = {
+    1:  [{ skin: 3701002, head: 1009 }, { skin: 1001, head: 1001 }],
+    2:  [{ skin: 2001,   head: 1002 }, { skin: 3702002, head: 1007 }],
+    3:  [{ skin: 3703002, head: 1008 }, { skin: 3001, head: 1003 }],
+    4:  [{ skin: 3704002, head: 1010 }, { skin: 4001, head: 1004 }],
+    5:  [{ skin: 5001,   head: 1005 }, { skin: 3705002, head: 1012 }],
+    6:  [{ skin: 3706002, head: 1013 }, { skin: 6001, head: 1006 }],
+    7:  [{ skin: 7001,   head: 1015 }, { skin: 3707002, head: 1016 }],
+    8:  [{ skin: 8001,   head: 1017 }],
+    9:  [{ skin: 3709002, head: 1014 }, { skin: 9001, head: 1011 }],
+    10: [{ skin: 10001,  head: 1019 }]
+  };
 
   /** 从 USERDATA 读取本机玩家当前选中的装备，组装成 SimpleInGameSummaryInfo。
    *  每次匹配时动态读取，确保用户在大厅换角色/皮肤后下一局能生效。 */
@@ -596,17 +609,18 @@
     return profile;
   }
 
-  /** 给 AI 机器人随机分配一个雀士 */
+  /** 给 AI 机器人随机分配一个雀士及其皮肤/头像 */
   function makeRobot(idx, humanWarrior) {
     var base = ROBOTS[idx];
-    var w = WARRIOR_POOL[Math.floor(Math.random() * WARRIOR_POOL.length)];
-    var h = 1000 + w;
-    var s = w * 1000 + 1;
+    var ids = Object.keys(WARRIOR_TABLE);
+    var w = parseInt(ids[Math.floor(Math.random() * ids.length)], 10);
+    var pair = WARRIOR_TABLE[w];
+    var pick = pair[Math.floor(Math.random() * pair.length)];
     var b = BANG_POOL[Math.floor(Math.random() * BANG_POOL.length)];
     return {
-      uid: base.uid, nick: base.nick, head: h, frame: base.frame,
+      uid: base.uid, nick: base.nick, head: pick.head, frame: base.frame,
       title: base.title, bang: b,
-      warrior: w, skin: s,
+      warrior: w, skin: pick.skin,
       level: base.level, pt: base.pt
     };
   }
