@@ -8175,13 +8175,14 @@
       const { tiles, akaSet } = buildWall({ sanma: this.sanma, akaCount: this.akaCount });
       this.akaSet = akaSet;
       const wall = shuffle(tiles, this.rng);
-      const dead = wall.splice(wall.length - 14, 14);
+      // 王牌总数：四麻14张、三麻18张（三麻拔北规则需8张岭上牌，故王牌扩为18张，宝牌指示牌仍为5张）
+      const deadLen = this.sanma ? 18 : 14;
+      const dead = wall.splice(wall.length - deadLen, deadLen);
       this.deadWall = dead;
-      // 岭上牌数量：四麻4张、三麻8张（三麻拔北/杠共需8张岭上牌，王牌总数仍14张）
       const rinLen = this.sanma ? 8 : 4;
       this.replacements = dead.slice(0, rinLen);
-      // 初始宝牌指示牌位置：四麻 dead[4]；三麻前8张是岭上，故 dead[8]
-      const baoBase = this.sanma ? rinLen : 4;
+      // 初始宝牌指示牌位置：四麻 dead[4]；三麻前8张是岭上，故 dead[8]（两者均为5张宝牌指示牌，布局一致）
+      const baoBase = this.sanma ? 8 : 4;
       this.doraIndicators = [dead[baoBase]];
       this.uraIndicators = [dead[baoBase + 1]];
       this._pendingBaoPreCard = 0;
@@ -8833,7 +8834,8 @@
     revealKanDora() {
       const i = this.kanCount;
       const baoBase = this.sanma ? 8 : 4;
-      const maxI = this.sanma ? 2 : 4;
+      // 三麻/四麻宝牌指示牌均5张（initial + 4 kan dora），布局一致，仅起始偏移不同（三麻8/四麻4）
+      const maxI = 4;
       if (i >= 1 && i <= maxI && this.deadWall[baoBase + 2 * i] != null) {
         const ind = this.deadWall[baoBase + 2 * i];
         this.doraIndicators.push(ind);
@@ -9162,14 +9164,14 @@
     decideGameOver(dealerContinues, scores) {
       if (scores.some((s) => s < 0)) return true;
       if (this.handIndex + 1 >= this.maxHands) return true;
-      // 1位必要点数：四麻 30000 / 三麻 40000
+      // 1位必要点数：四麻 30000 / 三麻 40000（用户指定规则）
       const necessary = this.playersN === 3 ? 40000 : 30000;
       const top = Math.max.apply(null, scores);
       const topMeets = top >= necessary;
       const isAllLast = this.juNum + 1 >= this.playersN;
       const wind = ["", "\u4E1C", "\u5357"][this.roundWind] || "?";
       const ju = this.juNum + 1;
-      // 南场（roundWind>=2）非末局：只要顶部达成必要点即结算
+      // 南场（roundWind>=2）非末局：只要顶部达成必要点即结算（用户选定：任意南场局末即结算）
       if (this.roundWind >= 2 && !isAllLast && topMeets) {
         console.log("[riichi] decideGameOver: " + wind + ju + " 顶部=" + top + ">=必要点" + necessary + " → 南场达成条件，结算");
         return true;
