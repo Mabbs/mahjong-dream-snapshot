@@ -201,6 +201,11 @@
     w.s(2, P.W().v(1, sess.uid).bytes());   // user { uid }
     w.v(63, nowS());                        // server time
     w.s(65, sess.sessionId);                // session uuid
+    // 进行中对局标记：真实服在客户端「还坐在一局没打完的牌里」时回 f22=1，
+    // 客户端据此发 20162（Offline2OnlineRequest）来恢复对局；缺了这一位，客户端会
+    // 判定「牌局已不存在」→ 直接发 20102 退回大厅（见 capture/dongfeng1 帧 10-12）。
+    // 仅当本会话确有未结束的对局(tableId 存在)时才置位，避免干扰正常登录/大厅。
+    if (sess.tableId) w.v(22, 1);
     return [[20002, w.bytes(), 1, null]];
   };
 
@@ -435,7 +440,9 @@
   }
 
   /** 20162 KGameServerOffline2OnlineRequest -> 20163
-   *  客户端每次连上（含断线重连）都会发一次，问「我是不是还在一局没打完的牌里」。
+   *  客户端在登录响应(20002)带 f22=1（进行中对局标记）时，连上后会发一次，
+   *  问「我是不是还在一局没打完的牌里」。mock 的 20002 必须补 f22=1 才会触发本分支
+   *  （见 HANDLERS[20001]）；缺了它，客户端判定牌局已不存在，直接发 20102 退大厅。
    *
    *  ★ 这是「Bye! 之后直接退出对局」的根因所在。
    *  客户端用的 BestHTTP，WebSocket.Close() 无参时的默认 reason 就是 "Bye!"；
@@ -475,7 +482,7 @@
       // 客户端就会先看到「当前这一巡」再看到「本局开头」，牌局直接错乱。
       sess.replaying = true;
       if (sess._resyncTimer) { clearTimeout(sess._resyncTimer); sess._resyncTimer = null; }
-      setTimeout(function () { replayHand(sess); }, 300);
+      setTimeout(function () { replayHand(sess); }, 150);
     } else if (!live) {
       log('  [resync] 无进行中对局');
     }
@@ -503,22 +510,28 @@
     }
 
     log('  [resync] 开始重放（已开牌=%s）', skipToPrepare);
+    // 批处理下推：每批发 BATCH 帧、批间留 BATCH_GAP 毫秒。客户端在主线程 Update 里
+    // 排队消费，单 tick 只处理几帧不会卡到再次超时（Bye!）；同时批处理把整局重放耗时
+    // 从「逐帧 8ms」压到接近真实服（真实服发的是 20163 里的局面快照 f100，几乎瞬时）。
+    var BATCH = 6, BATCH_GAP = 6;
     var i = 0;
     (function next() {
       if (!sess.socket || sess.socket.readyState !== OPEN) { sess.replaying = false; sess._replayStarted = false; return; }
+      var sent = 0;
+      while (i < sess.handFrames.length && sent < BATCH) {
+        var f = sess.handFrames[i];
+        i++;
+        if (!(skipToPrepare && f[0] === RIICHI_NTF_TO_PREPARE)) {
+          sess.push(20018, encodeKRiichi(f[0], f[1]), 1, null, null);
+        }
+        sent++;
+      }
       if (i >= sess.handFrames.length) {
         sess.replaying = false; sess._replayStarted = false;
         log('  [resync] 重放完成，共 %d 帧，恢复实时下推', i);
         return;
       }
-      var f = sess.handFrames[i];
-      i++;
-      if (!(skipToPrepare && f[0] === RIICHI_NTF_TO_PREPARE)) {
-        sess.push(20018, encodeKRiichi(f[0], f[1]), 1, null, null);
-      }
-      // 逐帧投递而不是一次性灌进去：客户端是在主线程 Update 里排队消费的，
-      // 几百帧挤在同一个 tick 反而会把它卡到再次超时（又一次 Bye!）。
-      setTimeout(next, 8);
+      setTimeout(next, BATCH_GAP);
     })();
   }
 
@@ -991,32 +1004,40 @@
 
   FakeWebSocket.prototype.close = function (code, reason) {
     if (this.readyState === CLOSED || this.readyState === CLOSING) return;
-    this.readyState = CLOSING;
     var self = this;
-    // 对局进行中：把关闭伪装成「网络异常掉线」(1006) 而非「服务端优雅关闭」(1000)。
-    // 客户端(BestHTTP)对 1000 "Bye!" 的解读是「服务端主动结束会话」→ 重连后直接发
-    // 20102 结算退出对局；对 1006 的解读是「网络抖动」→ 重连后发 20162 询问并恢复
-    // 对局（对照真实服抓包 capture/dongfeng1 帧 110-124：断线重连后客户端发 20162，
-    // 服务端回 TableInfo，随即重放 20018 恢复牌局）。两种情况下引擎都保留，区别只
-    // 在于让客户端走「恢复」分支而不是「结算退出」分支。
     var activeGame = !!(
       self._session && self._session.tableId &&
       self._session.riichi && !self._session.riichi.matchOver
     );
-    var closeCode = activeGame ? 1006 : (code || 1000);
-    var closeReason = activeGame ? '' : (reason || '');
-    var closeClean = !activeGame;
-    setTimeout(function () {
-      self.readyState = CLOSED;
-      // 不销毁会话：保留 riichi 引擎，客户端重连时复用（避免对局中断）
-      _lastSession = self._session;
-      self._session.suspend();
-      self._emit('close', {
-        type: 'close', code: closeCode, reason: closeReason,
-        wasClean: closeClean, target: self
-      });
-      log('[mock] 虚拟连接已关闭 code=%s reason=%s（引擎已保留）', closeCode, closeReason);
-    }, 0);
+    if (!activeGame) {
+      // 非对局中：正常优雅关闭（回 1000 或客户端给的码，关帧握手照常完成）
+      this.readyState = CLOSING;
+      setTimeout(function () {
+        self.readyState = CLOSED;
+        // 不销毁会话：保留 riichi 引擎，客户端重连时复用（避免对局中断）
+        _lastSession = self._session;
+        self._session.suspend();
+        self._emit('close', {
+          type: 'close', code: code || 1000, reason: reason || '',
+          wasClean: true, target: self
+        });
+        log('[mock] 虚拟连接已关闭 code=%s reason=%s', code || 1000, reason || '');
+      }, 0);
+      return;
+    }
+    // 对局进行中：模拟「网络掉线」。真实服断网时不回关帧，BestHTTP 检测到连接异常
+    // （onError）→ 以异常码 onClose(1006, wasClean=false) 收尾 → 客户端保留在局状态并
+    // 自动重连 → 重连后发 20162 询问并恢复对局（见 capture/dongfeng1）。
+    // 只发 error 客户端不会判定连接已结束、也就不重连；真实 WebSocket 掉线是 error 之后
+    // 再补一个 wasClean=false 的 close，这里照此补上，客户端才会触发重连。
+    // 关键在于：这是【服务端侧】发起的断开（客户端并未调用 ws.close），所以客户端的
+    // 在局状态不会被清空——重连后才会发 20162 而不是 20102。引擎始终保留在 _lastSession。
+    this.readyState = CLOSED;
+    _lastSession = self._session;
+    self._session.suspend();
+    self._emit('error', { type: 'error', message: 'simulated network drop', target: self });
+    self._emit('close', { type: 'close', code: 1006, reason: '', wasClean: false, target: self });
+    log('[mock] 虚拟连接已关闭（对局中·模拟掉线）code=1006 wasClean=false（引擎已保留）');
   };
 
   FakeWebSocket.CONNECTING = CONNECTING;
