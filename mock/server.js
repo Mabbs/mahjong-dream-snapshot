@@ -569,16 +569,16 @@
   /** 雀士 → 皮肤/头像 对应关系（皮肤与头像成对，随机抽一组）。
    *  数据来源：角色,皮肤,头像 对应表。键即为可用雀士 ID 池。 */
   var WARRIOR_TABLE = {
-    1:  [{ skin: 3701002, head: 1009 }, { skin: 1001, head: 1001 }],
-    2:  [{ skin: 2001,   head: 1002 }, { skin: 3702002, head: 1007 }],
-    3:  [{ skin: 3703002, head: 1008 }, { skin: 3001, head: 1003 }],
-    4:  [{ skin: 3704002, head: 1010 }, { skin: 4001, head: 1004 }],
-    5:  [{ skin: 5001,   head: 1005 }, { skin: 3705002, head: 1012 }],
-    6:  [{ skin: 3706002, head: 1013 }, { skin: 6001, head: 1006 }],
-    7:  [{ skin: 7001,   head: 1015 }, { skin: 3707002, head: 1016 }],
-    8:  [{ skin: 8001,   head: 1017 }],
-    9:  [{ skin: 3709002, head: 1014 }, { skin: 9001, head: 1011 }],
-    10: [{ skin: 10001,  head: 1019 }]
+    1:  [{ skin: 1001, head: 1001 }, { skin: 3701002, head: 1009 }],
+    2:  [{ skin: 2001, head: 1002 }, { skin: 3702002, head: 1007 }],
+    3:  [{ skin: 3001, head: 1003 }, { skin: 3703002, head: 1008 }],
+    4:  [{ skin: 4001, head: 1004 }, { skin: 3704002, head: 1010 }],
+    5:  [{ skin: 5001, head: 1005 }, { skin: 3705002, head: 1012 }],
+    6:  [{ skin: 6001, head: 1006 }, { skin: 3706002, head: 1013 }],
+    7:  [{ skin: 7001, head: 1015 }, { skin: 3707002, head: 1016 }],
+    8:  [{ skin: 8001, head: 1017 }, { skin: 3708002, head: 1017 }],
+    9:  [{ skin: 9001, head: 1011 }, { skin: 3709002, head: 1014 }],
+    10: [{ skin: 10001, head: 1019 }]
   };
 
   /** 从 USERDATA 读取本机玩家当前选中的装备，组装成 SimpleInGameSummaryInfo。
