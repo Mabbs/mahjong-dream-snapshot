@@ -8058,13 +8058,15 @@
     }
     return { yiFans, isYiMan, baoFan, liBaoFan, redBaoFan };
   }
-  function manTypeFromResult({ han, yakuman, name }) {
+  function manTypeFromResult({ han, fu = 0, yakuman, name }) {
     if (yakuman > 0 || /役満/.test(name || "")) return ManType.YiMan;
     if (han >= 13) return ManType.YiMan;
     if (han >= 11) return ManType.SanBeiMan;
     if (han >= 8) return ManType.BeiMan;
     if (han >= 6) return ManType.TiaoMan;
     if (han >= 5) return ManType.ManGuan;
+    // 低番高符满贯：4 番 40 符以上 / 3 番 70 符以上即满贯档（荣和 8000）
+    if ((han === 4 && fu >= 40) || (han === 3 && fu >= 70)) return ManType.ManGuan;
     return ManType.NoMan;
   }
 
@@ -8599,6 +8601,7 @@
       const p = this.players[seat];
       const isMoQie = p.drawnTile === card;
       p.drawnTile = null;
+      p.rinshan = false;
       const canQiang = this.players.map((q) => q.seat === seat ? [] : this.claimActions(q.seat, seat, card));
       this.emit(RiichiMsg.ENtfPlayCard, this.buildPlayCard(seat, card, action, isMoQie, canQiang));
       await this._d(this.T.claim);
@@ -8979,23 +8982,33 @@
       const winP = this.players[winner];
       const isDealerWin = winner === this.dealerSeat;
       const doraBreak = this.countDora(winP, res.type === "ron" ? res.card : null);
-      const w = this.applyExtraFan(res.win, doraBreak.babei + doraBreak.babeiAsDora, isDealerWin);
+      let extraFan = doraBreak.babei + doraBreak.babeiAsDora;
+      // 拔北后摸岭上牌和牌：riichi 库(yaku.js 嶺上開花)要求副露中存在杠才给，
+      // 而拔北副露只有 1 张北、hasKantsu=false -> 库漏算岭上开花。此处补记 1 番
+      const hasKan = winP.melds.some((m) => m.type === "ankan" || m.type === "kan");
+      if (res.type === "tsumo" && winP.rinshan && !hasKan) {
+        extraFan += 1;
+        (res.win.yaku || (res.win.yaku = {}))["\u5DBA\u4E0A\u958B\u82B1"] = "1\u98DC";
+      }
+      const w = this.applyExtraFan(res.win, extraFan, isDealerWin);
       const pay = new Array(n).fill(0);
-      let gain = 0;
+      const purePay = new Array(n).fill(0);
+      let gain = 0, pureGain = 0;
       if (res.type === "tsumo") {
         for (let s = 0; s < n; s++) {
           if (s === winner) continue;
-          let amt;
-          if (isDealerWin) amt = w.oya[0] || 0;
-          else amt = s === this.dealerSeat ? w.ko[0] || 0 : w.ko[1] || 0;
-          amt += this.honba * 100;
-          pay[s] = amt;
-          gain += amt;
+          const base = isDealerWin ? w.oya[0] || 0 : s === this.dealerSeat ? w.ko[0] || 0 : w.ko[1] || 0;
+          pay[s] = base + this.honba * 100;
+          purePay[s] = base;
+          gain += pay[s];
+          pureGain += base;
         }
       } else {
-        const amt = (w.ten || 0) + this.honba * 300;
-        pay[res.loser] = amt;
-        gain = amt;
+        const base = w.ten || 0;
+        pay[res.loser] = base + this.honba * 300;
+        purePay[res.loser] = base;
+        gain = pay[res.loser];
+        pureGain = base;
       }
       const stickBonus = this.riichiSticks * 1e3;
       gain += stickBonus;
@@ -9008,7 +9021,7 @@
       const detail = {
         yiFans: this.rebuildYiFans(yakuInfo.yiFans),
         isYiMan: yakuInfo.isYiMan || w.yakuman > 0,
-        manType: manTypeFromResult({ han: w.han, yakuman: w.yakuman, name: w.name }),
+        manType: manTypeFromResult({ han: w.han, fu: w.fu, yakuman: w.yakuman, name: w.name }),
         baoFan: doraBreak.omote,
         liBaoFan: doraBreak.ura,
         redBaoFan: doraBreak.aka,
@@ -9019,8 +9032,8 @@
       dealerContinues = isDealerWin;
       this.riichiSticks = 0;
       const gameOver = this.decideGameOver(dealerContinues, scores);
-      const huDelta = pay.map((v) => -v);
-      huDelta[winner] = gain - stickBonus;
+      const huDelta = purePay.map((v) => -v);
+      huDelta[winner] = pureGain;
       ui = this.buildStopUserInfos(scores, winner, detail, null, gameOver, huDelta);
       this.emit(RiichiMsg.ENtfGameStop, {
         huSeats: [winner],
@@ -9106,15 +9119,20 @@
       const uma = this.playersN === 3 ? [15, 0, -15] : [35, 5, -15, -25];
       for (let s = 0; s < this.playersN; s++) {
         const p = this.players[s];
-        const isWinner = winner === s;
-        const change = scores[s] - p.scoreAtStart;
-        const rank = rankOf[s];
+      const isWinner = winner === s;
+      const change = huDelta ? huDelta[s] || 0 : 0;
+      // changeScore = 本手净分差（含立直棒/本场棒，与实机一致）；
+      // yiFanChangeDian = 纯番符打点（不含立直棒/本场棒，之前的需求）。
+      // handStart 取上一手结束时的累计分(this.scores)，首手则用 startScore。
+      const handStart = this.scores ? this.scores[s] : this.startScore;
+      const netDelta = scores[s] - handStart;
+      const rank = rankOf[s];
         const jing = isFinal ? (scores[s] - this.startScore) / 1e3 + uma[rank - 1] : 0;
         out.push({
           seat: s,
           score: scores[s],
           handCards: p.hand.slice(),
-          changeScore: change,
+          changeScore: netDelta,
           yiFans: isWinner && detail ? detail.yiFans : [],
           baoFan: isWinner && detail ? detail.baoFan : 0,
           liBaoFan: isWinner && detail ? detail.liBaoFan : 0,
@@ -9134,8 +9152,8 @@
           alreadyRiichi: p.riichi,
           baBeiCards: p.melds.filter((m) => m.type === "babei").map((m) => m.tiles[0]),
           rank,
-          // 因和牌役番产生的点数变化。流局的听牌罚符不计入（实机流局局该字段缺省）。
-          yiFanChangeDian: huDelta ? huDelta[s] || 0 : 0,
+          // 因和牌役番产生的纯打点（只含番符，不含本场棒/立直棒/听牌罚符）。
+          yiFanChangeDian: change,
           jingSuanScore: jing,
           jieBi: Math.round(jing * 100),
           changePT: 0,
