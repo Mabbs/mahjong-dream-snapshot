@@ -88,7 +88,22 @@
     window.fetch = function (input, init) {
       var u = (typeof input === 'string') ? input : (input && input.url) || '';
       if (BLOCK.test(u)) {
-        console.log('[offline] 拦截 fetch:', u);
+        if (init && init.body instanceof Blob && u.includes("datalog")) {
+          init.body.text().then(function (text) {
+            var data = JSON.parse(text);
+            try {
+              var binaryString = atob(data.msg);
+              var bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              data = new TextDecoder('utf-8').decode(bytes);
+            } catch(e) { }
+            console.log('[offline] 上报日志:', data);
+          });
+        } else {
+          console.log('[offline] 拦截 fetch:', u);
+        }
         return Promise.resolve(new Response('{}', {
           status: 200, headers: { 'Content-Type': 'application/json' }
         }));

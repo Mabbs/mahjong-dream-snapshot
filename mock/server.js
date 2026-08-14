@@ -77,6 +77,137 @@
   // 可变的大厅用户数据：保存类操作直接改这里，并通过 wrapper f24 回推增量
   var USERDATA = new U.UserData(P.b64decode(DATA.userdataB64), UID);
 
+  /* ================================================================== *
+   * 100141 刷屏的真正根因：DT39(Task) 的「刷新点」是时间戳，快照里已过期
+   * ------------------------------------------------------------------
+   * schema（protos/src/user_info/user_info.proto）：
+   *   TaskInfo{1:ResidentTask} -> ResidentTask{3:map<int32,SingleTaskRecycleData>}
+   *   SingleTaskRecycleData{1:recycleType(1=每日,2=每周), 2:score,
+   *                         3:refreshTime(下次刷新点), 4:realRefreshTime(上次实际刷新)}
+   *
+   * 客户端逻辑是「now >= refreshTime -> 本地任务数据过期 -> 发 100141 查 DT39」。
+   * mock 回「版本相同 + 0 行」，客户端本地的 refreshTime 仍是过去时间，于是
+   * 立刻再查 —— 这就是 43B 请求 / 27B 响应的死循环刷屏（与模块存不存在无关）。
+   * 真实服在刷新点到来时会重算任务、bump 版本、下发「未来的 refreshTime」，
+   * 客户端一轮就收敛，所以真实抓包里 DT39 只是偶发轮询而非刷屏。
+   *
+   * 修复：启动时（以及每次查询 DT39 时）把过期的刷新点推到下一个刷新点，
+   * 并 bump 模块版本 —— 客户端 cliVer < srvVer 会拿到整模块 + 未来刷新点，
+   * 于是不再重复请求这个接口。幂等：未过期时不做任何改动。
+   * ================================================================== */
+  var TZ_OFFSET = 8 * 3600;                 // 刷新点按 UTC+8 的 00:00 计算
+
+  function dayIndex(ts) { return Math.floor((ts + TZ_OFFSET) / 86400); }
+  function dayStart(d) { return d * 86400 - TZ_OFFSET; }
+  function dayOfWeek(d) { return (d + 4) % 7; }      // 0=周日（1970-01-01 是周四）
+
+  /** 下一个刷新点：type 2=每周(下周一 00:00)，其余按每日(次日 00:00) */
+  function nextRefreshPoint(rtype, now) {
+    var d = dayIndex(now);
+    if (Number(rtype) === 2) {
+      var dow = dayOfWeek(d) || 7;                   // 1..7，7=周日
+      return dayStart(d + (8 - dow));
+    }
+    return dayStart(d + 1);
+  }
+
+  /** 当前周期起点（写入 realRefreshTime：上一次实际刷新时刻） */
+  function curPeriodStart(rtype, now) {
+    var d = dayIndex(now);
+    if (Number(rtype) === 2) {
+      var dow = dayOfWeek(d) || 7;
+      return dayStart(d - (dow - 1));
+    }
+    return dayStart(d);
+  }
+
+  function tsText(ts) {
+    try { return new Date(Number(ts) * 1000).toLocaleString(); }
+    catch (e) { return String(ts); }
+  }
+
+  /** 改写一条 SingleTaskRecycleData；未过期返回 null（不改动） */
+  function fixRecycleValue(valBytes, mapKey, now) {
+    var d = P.dict(valBytes);
+    var rtype = Number(d[1] != null ? d[1] : mapKey) || 1;
+    var old = Number(d[3] || 0);
+    if (old > now) return null;                      // 刷新点还在未来 -> 无需处理
+    var to = nextRefreshPoint(rtype, now);
+    var nb = P.setVarint(valBytes, 3, to);           // refreshTime -> 下一个刷新点
+    nb = P.setVarint(nb, 4, curPeriodStart(rtype, now));  // realRefreshTime -> 本周期起点
+    return { bytes: nb, rtype: rtype, from: old, to: to };
+  }
+
+  /** 遍历 ResidentTask.f3(recycles map entry)，过期的改写；无改动返回 null */
+  function fixResidentTask(bytes, now, report) {
+    var fs = P.parse(bytes), w = P.W(), changed = false;
+    for (var i = 0; i < fs.length; i++) {
+      var fn = fs[i][0], wt = fs[i][1], val = fs[i][2];
+      if (fn === 3 && wt === 2) {
+        var mapKey = Number(P.dict(val)[1] || 0);
+        var ent = P.parse(val), ew = P.W(), entChanged = false;
+        for (var j = 0; j < ent.length; j++) {
+          var efn = ent[j][0], ewt = ent[j][1], ev = ent[j][2];
+          if (efn === 2 && ewt === 2) {
+            var r = fixRecycleValue(ev, mapKey, now);
+            if (r) {
+              ew.s(2, r.bytes);
+              entChanged = true;
+              r.key = mapKey;
+              report.push(r);
+              continue;
+            }
+          }
+          P.reencode(ew, efn, ewt, ev);
+        }
+        if (entChanged) { w.s(3, ew.bytes()); changed = true; continue; }
+      }
+      P.reencode(w, fn, wt, val);
+    }
+    return changed ? w.bytes() : null;
+  }
+
+  /** DT39 Task：把过期刷新点推到未来并 bump 版本。返回是否有改动（幂等） */
+  function fixTaskRefreshTime(why) {
+    var mod = USERDATA.modules[39];
+    if (!mod || !mod.order || !mod.order.length) return false;
+    var now = nowS(), report = [], changed = false;
+    for (var oi = 0; oi < mod.order.length; oi++) {
+      var key = mod.order[oi], data = mod.rows[key];
+      if (!data || !data.length) continue;
+      var fs = P.parse(data), w = P.W(), rowChanged = false;
+      for (var i = 0; i < fs.length; i++) {
+        var fn = fs[i][0], wt = fs[i][1], val = fs[i][2];
+        if (fn === 1 && wt === 2) {                  // TaskInfo.residentTask
+          var nb = fixResidentTask(val, now, report);
+          if (nb) { w.s(1, nb); rowChanged = true; continue; }
+        }
+        P.reencode(w, fn, wt, val);
+      }
+      if (rowChanged) { mod.rows[key] = w.bytes(); changed = true; }
+    }
+    if (changed) {
+      // 版本必须「随天数单调递增」：每次重载都从快照基线(21530)开始修，
+      // 若固定只 +1，则第二天重载后版本仍是 21531 —— 客户端缓存里也是 21531，
+      // 于是拿不到新数据、但本地刷新点已过期 -> 又开始刷屏。
+      // 这里按「已跨过的天数」加权，保证隔天重载版本一定比客户端缓存更高。
+      var gap = 0;
+      for (var g = 0; g < report.length; g++) {
+        if (report[g].from > 0) {
+          gap = Math.max(gap, dayIndex(now) - dayIndex(report[g].from));
+        }
+      }
+      mod.version = (mod.version || 0) + 1 + Math.max(0, gap);
+      for (var r = 0; r < report.length; r++) {
+        log('[mock] DT39 刷新点修正(%s)：key=%s %s  refreshTime %s -> %s  (DT39 v%d)',
+          why, report[r].key, Number(report[r].rtype) === 2 ? '每周' : '每日',
+          tsText(report[r].from), tsText(report[r].to), mod.version);
+      }
+    }
+    return changed;
+  }
+  fixTaskRefreshTime('启动');
+
   function uuid4() {
     if (global.crypto && global.crypto.randomUUID) return global.crypto.randomUUID();
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
@@ -217,27 +348,19 @@
 
   /** 100141 QueryUserDataRequest -> 100142
    *
-   *  增量协议：
-   *    · version = max uint64 -> 返回全量数据
-   *    · version = 具体值    -> 回头部0行（用客户端版本号）
+   *  增量协议（与真实服一致，参考 proto/user_info/user_data.proto 的
+   *  QueryUserDataSingleTypeResponse.version）：
+   *    · 未带版本 / uint64-max「全部」哨兵 -> 返回整模块（含服务端当前 version）
+   *    · 带具体版本 Vc：
+   *        - Vc >= 服务端版本 -> 回头部 0 行，version 用「服务端权威值」
+   *                              （不是回显客户端版本，否则客户端永远学不到真实版本）
+   *        - Vc <  服务端版本 -> 直接回整模块，让客户端一轮就拿到最新数据+版本，收敛
    *
-   *  刷屏检测：2 秒内 10+ 次 100141 → 强制断开 WebSocket 让客户端重连。
-   *  真实服中客户端版本靠 f24 推送同步，不会遇到增量版本不一致。
-   *  mock 中客户端 IndexedDB 缓存的旧版本号与快照不同时，可能进入
-   *  重查死循环。断线重连后客户端发全量 v=max，自然收敛。
+   *  旧实现把客户端版本原样回显且永远回 0 行，IndexedDB 旧缓存与快照版本不一致时
+   *  客户端永远收不到最新数据 → 重查死循环，只能用断 WebSocket 来「重置」。
+   *  现在按服务端权威版本收敛，单次查询即同步，无需断线。
    */
   HANDLERS[100141] = function (sess, payload) {
-    // 刷屏检测
-    if (!sess._spamTs) sess._spamTs = [];
-    var now = nowMs();
-    sess._spamTs.push(now);
-    while (sess._spamTs.length > 0 && sess._spamTs[0] < now - 2000) sess._spamTs.shift();
-    if (sess._spamTs.length >= 10 && sess.socket) {
-      sess._spamTs = [];
-      try { sess.socket.close(1001, 'spam reset'); } catch (e) {}
-      return [];
-    }
-
     var queries = [];
     try {
       var fs = P.parse(payload);
@@ -249,23 +372,61 @@
       }
     } catch (e) { /* 解析失败时退化为全量 */ }
 
+    // 时间自愈：涉及 DT39 时先把过期刷新点推到未来（幂等）。这样本次响应就带上
+    // 「未来的 refreshTime」+ 更高版本，客户端一轮即收敛；挂机跨天后也能自愈。
+    var touchTask = !queries.length;
+    for (var qi = 0; qi < queries.length; qi++) {
+      if (Number(queries[qi][0]) === 39) touchTask = true;
+    }
+    if (touchTask) fixTaskRefreshTime('100141');
+
     if (!queries.length) return [[100142, USERDATA.serialize(), 1, null]];
 
     var w = P.W();
     for (var h = 0; h < USERDATA.headParts.length; h++) {
       P.reencode(w, USERDATA.headParts[h][0], USERDATA.headParts[h][1], USERDATA.headParts[h][2]);
     }
+    var dataCount = 0, missCount = 0, details = [];
     for (var k = 0; k < queries.length; k++) {
-      var dt = queries[k][0], cliVer = queries[k][1];
+      var dt = queries[k][0];
+      // cliVer 可能是 BigInt（uint64 全量哨兵），统一转 number 避免比较/编码抛错
+      var raw = queries[k][1];
+      var cliVer = (typeof raw === 'bigint') ? Number(raw) : (raw == null ? -1 : Number(raw));
       var mod = USERDATA.modules[dt];
-      if (!mod) { w.s(3, P.W().v(1, dt).bytes()); continue; }
-      if (cliVer >= 2147483647) {
-        w.s(3, mod.serialize());
-      } else {
-        var st = P.W().v(1, dt);
-        if (cliVer) st.v(2, cliVer);
-        w.s(3, st.bytes());
+
+      if (mod == null) {
+        // 模块在 mock 快照里不存在（例：dt=3 不在 userdataB64 中）。
+        // 旧实现返回「无版本头部」，客户端永远无法判定已同步 -> 反复重查死循环（刷屏）。
+        // 修复：回显客户端版本（或 0），让客户端能正常收敛、停止轮询。
+        var hv = (cliVer > 0 && cliVer < 1e18) ? cliVer : 0;
+        w.s(3, P.W().v(1, dt).v(2, hv).bytes());
+        missCount++;
+        details.push(dt + '(缺失)cli=' + cliVer + '->' + hv);
+        continue;
       }
+
+      var isFull = (cliVer < 0) || (cliVer >= 1e18);   // 未带版本 / uint64-max 全量哨兵
+      if (isFull) {
+        w.s(3, mod.serialize());                        // 整模块（带服务端当前版本）
+        dataCount++;
+        details.push(dt + ':全量->v' + mod.version);
+      } else if (cliVer < mod.version) {
+        w.s(3, mod.serialize());                        // 客户端落后 -> 给整模块，一次同步
+        dataCount++;
+        details.push(dt + ':cli=' + cliVer + '<srv=' + mod.version + '->下发整模块');
+      } else {
+        // 已最新/超前：回显「客户端版本」，0 行（与真实服一致——真实服即回显客户端版本）
+        w.s(3, P.W().v(1, dt).v(2, cliVer).bytes());
+        details.push(dt + ':cli=' + cliVer + '=srv->0行');
+      }
+    }
+    var mode = (queries.length && (queries[0][1] >= 1e18 || queries[0][1] < 0))
+      ? '全量' : '增量';
+    if (queries.length <= 4) {
+      log('  [100141] %s：%s', mode, details.join('  '));
+    } else {
+      log('  [100141] %s：%d 个 dt 请求，%d 个带数据下发，缺失=%d',
+        mode, queries.length, dataCount, missCount);
     }
     return [[100142, w.bytes(), 1, null]];
   };
