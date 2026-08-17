@@ -361,6 +361,17 @@
    *  现在按服务端权威版本收敛，单次查询即同步，无需断线。
    */
   HANDLERS[100141] = function (sess, payload) {
+    // 刷屏检测
+    if (!sess._spamTs) sess._spamTs = [];
+    var now = nowMs();
+    sess._spamTs.push(now);
+    while (sess._spamTs.length > 0 && sess._spamTs[0] < now - 2000) sess._spamTs.shift();
+    if (sess._spamTs.length >= 10 && sess.socket) {
+      sess._spamTs = [];
+      try { sess.socket.close(1001, 'spam reset'); } catch (e) {}
+      return [];
+    }
+    
     var queries = [];
     try {
       var fs = P.parse(payload);
