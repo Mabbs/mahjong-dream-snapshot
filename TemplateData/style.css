@@ -1,9 +1,6 @@
-body { padding: 0; margin: 0 }
-#unity-container { position: absolute }
-#unity-container.unity-desktop { left: 50%; top: 50%; transform: translate(-50%, -50%) }
-#unity-container.unity-mobile { position: fixed; width: 100%; height: 100% }
-#unity-canvas { background: #ffffff }
-.unity-mobile #unity-canvas { width: 100%; height: 100% }
+html, body { width: 100%; height: 100%; padding: 0; margin: 0; overflow: hidden }
+#unity-container { position: fixed; inset: 0; width: 100%; height: 100%; overflow: hidden }
+#unity-canvas { display: block; width: 100%; height: 100%; background: #ffffff }
 #unity-loading-bar { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: none }
 #unity-logo { width: 160px; height: 160px; margin: auto; background: url('unity-logo-light.png'); background-size:contain }
 #unity-progress-bar-empty { width: 182px; height: 14px; border-radius: 15px; background: url('progress-bar-empty-light.png')}

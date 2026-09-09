@@ -1,4 +1,5 @@
-/* 立直麻将对局引擎（浏览器版）—— 由 mockjs/build_browser.mjs 打包生成，请勿手改。
+/* 立直麻将对局引擎（浏览器版）—— 原由 mockjs/build_browser.mjs 打包生成。
+ * 快照仓库未包含上游源码；规则修复直接维护此文件，见 reports/riichi-audit.md 与 tests/。
  * 源码见 mockjs/{engine,ai,shanten,tiles,yaku_map,pb}.mjs + npm 包 riichi/protobufjs。
  * 挂载点：window.__mj.riichi */
 (() => {
@@ -793,7 +794,7 @@
           return agari2.check7(o.haiArray) && !YAKU2["\u4E8C\u76C3\u53E3"].check(o);
         } },
         "\u30C0\u30D6\u30EB\u7ACB\u76F4": { "han": 2, "isMenzenOnly": true, "check": (o) => {
-          return o.extra.includes("w") && !o.furo.length;
+          return o.extra.includes("w") && o.isMenzen();
         } },
         "\u4E00\u6C17\u901A\u8CAB": { "han": 2, "isFuroMinus": true, "check": (o) => {
           let res = [0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -874,7 +875,7 @@
               break;
             }
           }
-          return hasKantsu && o.extra.includes("k") && !o.extra.includes("h") && o.isTsumo && !YAKU2["\u4E00\u767A"].check(o);
+          return o.extra.includes("k") && !o.extra.includes("h") && o.isTsumo && !YAKU2["\u4E00\u767A"].check(o);
         } },
         "\u6436\u69D3": { "han": 1, "check": (o) => {
           return o.extra.includes("k") && !o.extra.includes("h") && !o.isTsumo;
@@ -883,7 +884,7 @@
           return o.extra.includes("h") && o.isTsumo;
         } },
         "\u6CB3\u5E95\u6488\u9B5A": { "han": 1, "check": (o) => {
-          return o.extra.includes("h") && !o.isTsumo && !YAKU2["\u4E00\u767A"].check(o);
+          return o.extra.includes("h") && !o.isTsumo;
         } },
         "\u5834\u98A8\u6771": { "han": 1, "check": (o) => {
           return o.bakaze === 1 && checkYakuhai(o, 1);
@@ -1168,12 +1169,12 @@
                   fu += is19(v[0]) ? 8 : 4;
                 else if (v.length === 3 && v[0] === v[1])
                   fu += is19(v[0]) ? 4 : 2;
-                else if (!hasAgariFu) {
+                else if (!hasAgariFu && !this.furo.includes(v)) {
                   if (v[1] === this.agari)
                     hasAgariFu = true;
-                  else if (v[0] === hasAgariFu && parseInt(v[2]) === 9)
+                  else if (v[0] === this.agari && parseInt(v[2]) === 9)
                     hasAgariFu = true;
-                  else if (v[2] === hasAgariFu && parseInt(v[0]) === 1)
+                  else if (v[2] === this.agari && parseInt(v[0]) === 1)
                     hasAgariFu = true;
                 }
               }
@@ -7724,6 +7725,8 @@
   }
   function furoGroupStr(meld, akaSet) {
     const suit = decodeId(meld.tiles[0]).suit;
+    // The bundled scorer represents concealed kans with TWO digits, open kans with four.
+    if (meld.type === "ankan") return String(decodeId(meld.tiles[0]).rank).repeat(2) + SUIT_CHAR2[suit];
     return meld.tiles.map((id) => tileDigit(id, akaSet)).join("") + SUIT_CHAR2[suit];
   }
   function furoStr(melds, akaSet) {
@@ -7735,7 +7738,7 @@
     const fs = furoStr(melds, akaSet);
     if (fs) s += "+" + fs;
     let ex = "";
-    if (opts.riichi) ex += "r";
+    if (opts.riichi) ex += opts.doubleRiichi ? "w" : "r";
     if (opts.ippatsu) ex += "i";
     if (opts.rinshan || opts.chankan) ex += "k";
     if (opts.haidi) ex += "h";
@@ -7755,7 +7758,11 @@
     const str = handStr(concealedIds, melds, akaSet, opts);
     let res;
     try {
-      res = new import_riichi.default(str.toLowerCase()).calc();
+      const scorer = new import_riichi.default(str.toLowerCase());
+      // Two-digit ankan notation cannot encode one red five without doubling it.
+      scorer.aka += realMelds(melds).filter(m => m.type === "ankan").reduce((n, m) => n + m.tiles.filter(t => akaSet && akaSet.has(t)).length, 0);
+      if (opts.tenhouRules) scorer.disableWyakuman();
+      res = scorer.calc();
     } catch (e) {
       return { isAgari: false, hasYaku: false, han: 0, fu: 0, ten: 0, yakuman: 0, yaku: {}, name: "", oya: [0], ko: [0], error: true };
     }
@@ -8081,13 +8088,15 @@
       const {
         players = 4,
         akaCount = 1,
-        startScore = 25e3,
+        startScore = opts.tenhouRules && players === 3 ? 35e3 : 25e3,
         emit,
         seed
       } = opts;
       this.playersN = players;
       this.sanma = players === 3;
       this.akaCount = akaCount;
+      this.tenhouRules = !!opts.tenhouRules;
+      this.matchLength = opts.matchLength === "hanchan" ? 2 : 1;
       this.startScore = startScore;
       this.emit = emit || (() => {
       });
@@ -8096,7 +8105,7 @@
       this.rng = seed != null ? mulberry32(seed) : Math.random;
       this.handIndex = 0;
       this.juNum = 0;
-      this.maxHands = opts.maxHands != null ? opts.maxHands : 16;
+      this.maxHands = opts.maxHands != null ? opts.maxHands : this.tenhouRules ? Infinity : 16;
       this.roundWind = 1;
       this.honba = 0;
       this.riichiSticks = 0;
@@ -8172,19 +8181,21 @@
       this.handEnded = false;
       this.xunNum = 0;
       this.kanCount = 0;
+      this.pendingKanDora = null;
       this.firstGoAround = true;
       this.lastDiscard = null;
       const { tiles, akaSet } = buildWall({ sanma: this.sanma, akaCount: this.akaCount });
       this.akaSet = akaSet;
       const wall = shuffle(tiles, this.rng);
       // 王牌总数：四麻14张、三麻18张（三麻拔北规则需8张岭上牌，故王牌扩为18张，宝牌指示牌仍为5张）
-      const deadLen = this.sanma ? 18 : 14;
+      const deadLen = this.sanma && !this.tenhouRules ? 18 : 14;
       const dead = wall.splice(wall.length - deadLen, deadLen);
       this.deadWall = dead;
-      const rinLen = this.sanma ? 8 : 4;
+      const rinLen = this.sanma && !this.tenhouRules ? 8 : 4;
       this.replacements = dead.slice(0, rinLen);
+      this.replacementDraws = 0;
       // 初始宝牌指示牌位置：四麻 dead[4]；三麻前8张是岭上，故 dead[8]（两者均为5张宝牌指示牌，布局一致）
-      const baoBase = this.sanma ? 8 : 4;
+      const baoBase = this.sanma && !this.tenhouRules ? 8 : 4;
       this.doraIndicators = [dead[baoBase]];
       this.uraIndicators = [dead[baoBase + 1]];
       this._pendingBaoPreCard = 0;
@@ -8291,12 +8302,14 @@
     // 岭上摸牌（杠后）
     async drawReplacement(seat) {
       const p = this.players[seat];
-      if (!this.replacements.length || this.remain <= 0) {
+      if (!this.canReplace()) {
         await this.exhaustiveDraw();
         return false;
       }
       const tile = this.replacements.pop();
-      this.wall.pop();
+      const tail = this.wall.pop();
+      this.replacementDraws = (this.replacementDraws || 0) + 1;
+      if (this.sanma && this.tenhouRules) this.replacements.unshift(tail);
       this.remain = this.wall.length;
       p.hand.push(tile);
       p.drawnTile = tile;
@@ -8306,6 +8319,9 @@
     }
     async doBaBei(seat, tile) {
       const p = this.players[seat];
+      if (!this.sanma || !p.hand.includes(tile) || kindOf2(tile) !== 44 || p.drawnTile == null || !this.canReplace()) return;
+      if (p.riichi && tile !== p.drawnTile) return;
+      if (this.tenhouRules && await this.resolveKanRobbery(seat,tile,"nuki")) return;
       const i = p.hand.lastIndexOf(tile);
       if (i >= 0) p.hand.splice(i, 1);
       p.melds.push({ type: "babei", tiles: [tile] });
@@ -8358,6 +8374,11 @@
         card = d.card;
         await this._d(this.T.think);
       }
+      if (card == null && action === PlayAction.Normal) card = this.legalDiscard(p);
+      if (!this.validTurnAction(seat, action, card, drew)) {
+        if (!aiControlled) return this.awaitTurn(seat, drew, true);
+        action = PlayAction.Normal; card = this.legalDiscard(p);
+      }
       await this.processTurnAction(seat, action, card, drew);
     }
     // 手牌 14 张时的可选动作
@@ -8366,18 +8387,22 @@
       const acts = [PlayAction.Normal];
       if (drew && this.canTsumo(p)) acts.push(PlayAction.Hu);
       if (!p.riichi && p.menzen && this.canRiichi(p)) acts.push(PlayAction.Riichi);
-      if (drew && this.kanCount < 4 && this.remain > 1) {
+      if (drew && this.kanCount < 4 && this.canReplace()) {
         if (this.concealedQuadTile(p) != null) acts.push(PlayAction.AnGang);
         if (!p.riichi && this.addedKanTile(p) != null) acts.push(PlayAction.PengGang);
       }
       if (drew && !this.isAiSeat(p) && this.canJiuZhongJiuPai(p)) acts.push(PlayAction.JiuZhongJiuLiuJu);
-      if (this.sanma && this.northInHand(p) != null && this.replacements.length && this.remain > 1) {
+      if (drew && this.sanma && this.northInHand(p) != null && this.canReplace() && (!p.riichi || kindOf2(p.drawnTile) === 44)) {
         acts.push(PlayAction.BaBei);
       }
       return acts;
     }
+    canReplace() {
+      return this.remain > 0 && this.replacements.length > 0 && (!this.sanma || !this.tenhouRules || (this.replacementDraws || 0) < 8);
+    }
     // 手里的北（三麻拔北用），没有则返回 null
     northInHand(p) {
+      if (p.riichi) return p.drawnTile != null && kindOf2(p.drawnTile) === 44 ? p.drawnTile : null;
       for (const t of p.hand) {
         const d = decodeId(t);
         if (d.suit === 4 && d.rank === 4) return t;
@@ -8412,15 +8437,44 @@
       return w.isAgari && w.hasYaku;
     }
     concealedQuadTile(p) {
+      return this.concealedQuadTiles(p)[0] ?? null;
+    }
+    riichiKanKinds(p) {
+      if (p.hand.length % 3 === 2) return this.concealedQuadTiles(p).map(t => kindOf2(t) * 10);
+      const out = [];
+      for (const k of new Set(p.hand.map(kindOf2))) {
+        if (p.hand.filter(t => kindOf2(t) === k).length !== 3) continue;
+        const t = k * 10;
+        const q = {...p, hand: p.hand.concat(t), drawnTile: t};
+        if (this.concealedQuadTiles(q).length) out.push(t);
+      }
+      return out;
+    }
+    markPassedRon(p) {
+      p.tempFuriten = true;
+      if (p.riichi) p.riichiFuriten = true;
+    }
+    concealedQuadTiles(p) {
       const cnt = {};
+      const out = [];
       for (const t of p.hand) cnt[kindOf2(t)] = (cnt[kindOf2(t)] || 0) + 1;
       for (const [k, c] of Object.entries(cnt)) {
         if (c >= 4) {
-          if (p.riichi) return null;
-          return p.hand.find((t) => kindOf2(t) === Number(k));
+          const tile = p.hand.find((t) => kindOf2(t) === Number(k));
+          if (p.riichi) {
+            // No okurikan: the fourth tile must be this turn's draw.
+            if (p.drawnTile == null || kindOf2(p.drawnTile) !== Number(k)) continue;
+            const before = p.hand.slice();
+            before.splice(before.indexOf(p.drawnTile), 1);
+            const after = p.hand.filter(t => kindOf2(t) !== Number(k));
+            const a = handWaits(before, p.melds).waitKinds;
+            const b = handWaits(after, p.melds.concat({type: "ankan", tiles: p.hand.filter(t => kindOf2(t) === Number(k))})).waitKinds;
+            if (!a.length || a.length !== b.length || a.some(w => !b.includes(w))) continue;
+          }
+          out.push(tile);
         }
       }
-      return null;
+      return out;
     }
     // 加杠：手上有与已碰的刻子同种的牌
     addedKanTile(p) {
@@ -8477,9 +8531,12 @@
       return {
         ronTile: isRon ? ronTile : null,
         riichi: p.riichi,
+        doubleRiichi: p.doubleRiichi,
+        tenhouRules: this.tenhouRules,
+        tenho: !isRon && this.firstGoAround && p.discards.length === 0,
         ippatsu: p.riichi && p.ippatsu,
         rinshan: !isRon && p.rinshan,
-        haidi: this.remain <= 0,
+        haidi: this.remain <= 0 && (isRon || !p.rinshan),
         doraTiles: this.doraTilesFor(p),
         roundWind: this.roundWind,
         seatWind: this.seatWindOf(p.seat)
@@ -8498,6 +8555,7 @@
       return this.bestDiscard(p).shanten === 0;
     }
     isFuriten(p) {
+      if (p.tempFuriten || p.riichiFuriten) return true;
       if (!p.waits || !p.waits.length) return false;
       return p.waits.some((k) => p.discardKinds.has(k));
     }
@@ -8542,15 +8600,40 @@
       return out.slice(0, 60);
     }
     // ================= 处理行动 =================
+    legalDiscard(p) {
+      const best = this.bestDiscard(p).discardId;
+      const allowed = t => !(p.forbiddenDiscards || []).includes(kindOf2(t)*10);
+      if (p.riichi && p.drawnTile != null) return p.drawnTile;
+      return allowed(best) ? best : p.hand.find(allowed);
+    }
+    validTurnAction(seat, action, card, drew) {
+      const p = this.players[seat];
+      if (action === PlayAction.JiuZhongJiuLiuJu) return drew && this.canJiuZhongJiuPai(p);
+      if (!this.turnActions(seat,drew).includes(action)) return false;
+      if (action === PlayAction.Hu || action === PlayAction.JiuZhongJiuLiuJu) return true;
+      if (!p.hand.includes(card)) return false;
+      if (action === PlayAction.AnGang) return this.concealedQuadTiles(p).some(t=>kindOf2(t)===kindOf2(card));
+      if (action === PlayAction.PengGang) return p.melds.some(m=>m.type==="pon" && kindOf2(m.tiles[0])===kindOf2(card));
+      if (action === PlayAction.BaBei) return kindOf2(card) === 44 && (!p.riichi || card === p.drawnTile);
+      if ((p.forbiddenDiscards || []).includes(kindOf2(card)*10)) return false;
+      if (action === PlayAction.Riichi) {
+        const rest=p.hand.slice();rest.splice(rest.indexOf(card),1);
+        return handShanten(rest,p.melds) === 0;
+      }
+      return !p.riichi || p.drawnTile == null || card === p.drawnTile;
+    }
     async processTurnAction(seat, action, card, drew) {
       const p = this.players[seat];
+      if (!this.validTurnAction(seat,action,card,drew)) return false;
       this._processing = true; // 动作执行中：此期间到达的包视为重复包丢弃
       this._bufferedDraw = null; this._bufferedClaim = null; // 清空上一动作的残留缓冲（防重复包重放）
       if (action === PlayAction.Hu) {
+        if (!drew || !this.canTsumo(p)) return;
         await this.winTsumo(seat);
         return;
       }
       if (action === PlayAction.JiuZhongJiuLiuJu) {
+        if (!drew || !this.canJiuZhongJiuPai(p)) return;
         await this.abortiveDraw(LiuJuType.JiuZhongJiuPai, seat);
         return;
       }
@@ -8576,7 +8659,13 @@
         }
       }
       if (action === PlayAction.Riichi) {
+        if (!this.canRiichi(p) || !p.hand.includes(card)) return;
+        const rest = p.hand.slice();
+        rest.splice(rest.indexOf(card), 1);
+        if (handShanten(rest, p.melds) !== 0) return;
+        p.doubleRiichi = this.firstGoAround && p.discards.length === 0;
         p.riichi = true;
+        p.riichiPending = true;
         p.riichiTurn = this.xunNum;
         p.ippatsu = true;
         p.score -= 1e3;
@@ -8588,6 +8677,9 @@
       if (idx >= 0) p.hand.splice(idx, 1);
       p.hand.sort((a, b) => a - b);
       p.discards.push(card);
+      p.forbiddenDiscards = [];
+      if (drew || p.clearFuritenOnDiscard) p.tempFuriten = false;
+      p.clearFuritenOnDiscard = false;
       p.discardKinds.add(kindOf2(card));
       this.updateWaits(p);
       this.lastDiscard = { seat, card };
@@ -8598,6 +8690,7 @@
       return this.players.map(() => []);
     }
     async discard(seat, card, action) {
+      this.flushKanDora();
       const p = this.players[seat];
       const isMoQie = p.drawnTile === card;
       p.drawnTile = null;
@@ -8605,14 +8698,6 @@
       const canQiang = this.players.map((q) => q.seat === seat ? [] : this.claimActions(q.seat, seat, card));
       this.emit(RiichiMsg.ENtfPlayCard, this.buildPlayCard(seat, card, action, isMoQie, canQiang));
       await this._d(this.T.claim);
-      if (this.playersN === 4 && this.players.every((q) => q.riichi)) {
-        await this.abortiveDraw(LiuJuType.SiJiaLiZhi, seat);
-        return;
-      }
-      if (this.checkSiFengLianDa()) {
-        await this.abortiveDraw(LiuJuType.SiFengLianDa, seat);
-        return;
-      }
       await this.resolveClaims(seat, card, canQiang);
     }
     checkSiFengLianDa() {
@@ -8636,7 +8721,7 @@
           canQiangActions: canQiang[q.seat] || [],
           isZhenTing: this.isFuriten(q),
           leftTimer: q.isHuman ? 20 : 0,
-          canAnGangNoNumCardsAfterRiichi: [],
+          canAnGangNoNumCardsAfterRiichi: q.riichi ? this.riichiKanKinds(q) : [],
           zhenTingTypes: []
         }))
       };
@@ -8648,7 +8733,7 @@
       if (this.canRon(p, card)) acts.push(PlayAction.Hu);
       if (!p.riichi) {
         const cnt = p.hand.filter((t) => kindOf2(t) === kindOf2(card)).length;
-        if (cnt >= 3 && this.kanCount < 4 && this.remain > 1) acts.push(PlayAction.MingGang);
+        if (cnt >= 3 && this.kanCount < 4 && this.canReplace()) acts.push(PlayAction.MingGang);
         if (cnt >= 2 && this.remain > 0) acts.push(PlayAction.Peng);
         if (!this.sanma && seat === this.nextSeat(discarderSeat) && this.remain > 0) {
           if (this.chiTiles(p, card)) acts.push(PlayAction.Chi);
@@ -8689,11 +8774,17 @@
       const all = [];
       if (!this.autoHuman && this.players[0].isHuman && canQiang[0] && canQiang[0].length) {
         this._processing = false; // 即将等待人类鸣牌输入，允许缓存合法早到响应
-        const payload = await this.waitHuman("claim");
+        let payload;
+        do {
+          payload = await this.waitHuman("claim");
+          if (this.handEnded || this.finished) return;
+        } while (payload && payload.action != null && payload.action !== PlayAction.Guo &&
+          (!canQiang[0].includes(payload.action) || !this.validClaimTiles(this.players[0],payload.action,card,payload.otherCards || [])));
         if (payload && payload.action != null && payload.action !== PlayAction.Guo) {
-          all.push({ seat: 0, action: payload.action, otherCards: payload.otherCards || [] });
+          if (canQiang[0].includes(payload.action)) all.push({ seat: 0, action: payload.action, otherCards: payload.otherCards || [] });
+          if (payload.action !== PlayAction.Hu && canQiang[0].includes(PlayAction.Hu)) this.markPassedRon(this.players[0]);
         } else if (canQiang[0].includes(PlayAction.Hu)) {
-          this.players[0].tempFuriten = true;
+          this.markPassedRon(this.players[0]);
         }
       }
       for (let s = 0; s < this.playersN; s++) {
@@ -8701,24 +8792,35 @@
         if (!canQiang[s] || !canQiang[s].length) continue;
         const c = this.aiClaim(s, discarderSeat, card, canQiang[s]);
         if (c) all.push(__spreadValues({ seat: s }, c));
-        else if (canQiang[s].includes(PlayAction.Hu)) this.players[s].tempFuriten = true;
+        if ((!c || c.action !== PlayAction.Hu) && canQiang[s].includes(PlayAction.Hu)) this.markPassedRon(this.players[s]);
+      }
+      const rons = all.filter(c => c.action === PlayAction.Hu);
+      for (const q of this.players) {
+        if (q.seat !== discarderSeat && q.waits && q.waits.includes(kindOf2(card)) && !rons.some(c=>c.seat===q.seat)) this.markPassedRon(q);
+      }
+      if (rons.length) {
+        this.cancelPendingRiichi(discarderSeat);
+        if (rons.length > 1) return this.winRons(rons.map(c => c.seat), discarderSeat, card);
+      } else this.players[discarderSeat].riichiPending = false;
+      if (!rons.length) {
+        if (this.playersN === 4 && this.players.every(q => q.riichi)) return this.abortiveDraw(LiuJuType.SiJiaLiZhi, discarderSeat);
+        if (this.checkSiFengLianDa()) return this.abortiveDraw(LiuJuType.SiFengLianDa, discarderSeat);
+        if (this.kanCount === 4 && !this.players.some(q => q.melds.filter(m => m.type === "kan" || m.type === "ankan").length === 4)) return this.abortiveDraw(LiuJuType.SiGang, discarderSeat);
       }
       if (!all.length) {
-        for (const q of this.players) {
-          q.tempFuriten = false;
-        }
         const next = this.nextSeat(discarderSeat);
         if (next === this.dealerSeat) this.firstGoAround = false;
         await this.turnDraw(next);
         return;
       }
-      const prio = (a) => a.action === PlayAction.Hu ? 4 : a.action === PlayAction.MingGang ? 3 : a.action === PlayAction.Peng ? 2 : 1;
-      all.sort((x, y) => prio(y) - prio(x));
+      const prio = (a) => a.action === PlayAction.Hu ? 4 : a.action === PlayAction.MingGang || a.action === PlayAction.Peng ? 2 : 1;
+      all.sort((x, y) => prio(y) - prio(x) || (x.seat - discarderSeat + this.playersN) % this.playersN - (y.seat - discarderSeat + this.playersN) % this.playersN);
       const win = all[0];
       await this.executeClaim(win.seat, win.action, card, discarderSeat, win.otherCards || []);
     }
     async executeClaim(seat, action, card, discarderSeat, otherCards) {
       const p = this.players[seat];
+      if (!this.validClaimTiles(p,action,card,otherCards)) return false;
       this._processing = true; // 鸣牌执行中：此期间到达的包视为重复包丢弃
       this._bufferedDraw = null; this._bufferedClaim = null; // 清空上一动作的残留缓冲（防重复包重放）
       const donor = this.players[discarderSeat];
@@ -8726,20 +8828,32 @@
         await this.winRon(seat, discarderSeat, card);
         return;
       }
+      if (!this.claimActions(seat, discarderSeat, card).includes(action)) return;
+      if (action === PlayAction.Peng && otherCards && otherCards.length &&
+        (otherCards.length !== 2 || new Set(otherCards).size !== 2 || otherCards.some(t=>!p.hand.includes(t) || kindOf2(t)!==kindOf2(card)))) return;
+      if (action === PlayAction.Chi && otherCards && otherCards.length) {
+        if (otherCards.length !== 2 || new Set(otherCards).size !== 2 || !otherCards.every(t=>p.hand.includes(t))) return;
+        const ds = [...otherCards,card].map(decodeId).sort((a,b)=>a.rank-b.rank);
+        if (ds[0].suit === 4 || ds.some(d=>d.suit!==ds[0].suit) || ds[1].rank !== ds[0].rank+1 || ds[2].rank !== ds[1].rank+1) return;
+      }
       donor.discards.pop();
+      donor.discardCalled = true;
+      // A call on the preceding player's discard reaches our normal turn;
+      // a reverse-order pon must not clear same-turn furiten.
+      p.clearFuritenOnDiscard = seat === this.nextSeat(discarderSeat);
       for (const q of this.players) q.ippatsu = false;
       this.firstGoAround = false;
-      for (const q of this.players) q.tempFuriten = false;
       if (action === PlayAction.MingGang) {
         // 校验合法性，拒绝重复包/非法动作（不进 doKan）
         if (!this.claimActions(seat, discarderSeat, card).includes(PlayAction.MingGang)) return;
         const used2 = this.takeTiles(p, card, 3);
         p.melds.push({ type: "kan", tiles: [...used2, card], from: discarderSeat });
+        this.recordResponsibility(p, card, discarderSeat);
         p.menzen = false;
         this.kanCount++;
         this.emit(RiichiMsg.ENtfQiangCard, this.buildQiang(seat, action, used2));
         await this._d(this.T.claim);
-        this.revealKanDora();
+        this.scheduleKanDora("kan");
         if (!await this.drawReplacement(seat)) return;
         this.emit(RiichiMsg.ENtfQiangCardEnd, this.buildQiangEnd(seat, action, used2, [...used2, card]));
         await this._d(this.T.claim);
@@ -8756,10 +8870,15 @@
           if (i >= 0) p.hand.splice(i, 1);
         }
       } else {
-        used = this.takeTiles(p, card, 2);
+        if (otherCards && otherCards.length === 2) {
+          used = otherCards.slice();
+          for (const t of used) p.hand.splice(p.hand.indexOf(t),1);
+        } else used = this.takeTiles(p, card, 2);
       }
       const meldTiles = [...used, card].sort((a, b) => a - b);
+      p.forbiddenDiscards = this.cantPlays(p,action,meldTiles);
       p.melds.push({ type: isChi ? "chi" : "pon", tiles: meldTiles, from: discarderSeat });
+      if (!isChi) this.recordResponsibility(p, card, discarderSeat);
       p.menzen = false;
       p.drawnTile = null;
       p.rinshan = false;
@@ -8771,6 +8890,10 @@
     }
     async doKan(seat, card, kind) {
       const p = this.players[seat];
+      if (this.kanCount >= 4 || !this.canReplace()) return;
+      if (kind === "ankan" && !this.concealedQuadTiles(p).some(t => kindOf2(t) === kindOf2(card))) return;
+      if (kind !== "ankan" && (p.riichi || !p.hand.includes(card) || !p.melds.some(m => m.type === "pon" && kindOf2(m.tiles[0]) === kindOf2(card)))) return;
+      if (await this.resolveKanRobbery(seat, card, kind)) return;
       let tiles;
       let kanCard = card;
       if (kind === "ankan") {
@@ -8786,19 +8909,6 @@
         tiles = m.tiles;
         this.kanCount++;
         kanCard = t;
-        const robbed = this.checkChanKan(seat, t);
-        if (robbed != null) {
-          this.emit(RiichiMsg.ENtfPlayCard, this.buildPlayCard(
-            seat,
-            t,
-            PlayAction.PengGang,
-            false,
-            this.players.map((q) => q.seat === robbed ? [PlayAction.Hu] : [])
-          ));
-          await this._d(this.T.claim);
-          await this.winRon(robbed, seat, t, { chankan: true });
-          return;
-        }
       }
       for (const q of this.players) q.ippatsu = false;
       this.firstGoAround = false;
@@ -8810,15 +8920,12 @@
         this.emptyClaims()
       ));
       await this._d(this.T.claim);
-      this.revealKanDora();
-      if (this.kanCount >= 4 && !this.players.some((q) => q.melds.filter((m) => m.type === "kan" || m.type === "ankan").length >= 4)) {
-        await this.abortiveDraw(LiuJuType.SiGang, seat);
-        return;
-      }
+      this.scheduleKanDora(kind);
       if (!await this.drawReplacement(seat)) return;
       await this.awaitTurn(seat, true);
     }
-    checkChanKan(kanSeat, tile) {
+    kanRobbers(kanSeat, tile, kind = "kakan") {
+      const out = [];
       for (let i = 1; i < this.playersN; i++) {
         const s = (kanSeat + i) % this.playersN;
         const q = this.players[s];
@@ -8828,15 +8935,51 @@
           q.hand,
           q.melds,
           this.akaSet,
-          __spreadProps(__spreadValues({}, this.winOpts(q, true, tile)), { chankan: true })
+          __spreadProps(__spreadValues({}, this.winOpts(q, true, tile)), { chankan: kind === "kakan", haidi: false })
         );
-        if (w.isAgari && w.hasYaku) return s;
+        if (w.isAgari && w.hasYaku && (kind !== "ankan" || Object.keys(w.yaku).some(y => y.startsWith("国士無双")))) out.push(s);
       }
-      return null;
+      return out;
     }
-    revealKanDora() {
-      const i = this.kanCount;
-      const baoBase = this.sanma ? 8 : 4;
+    checkChanKan(kanSeat, tile) {
+      return this.kanRobbers(kanSeat, tile)[0] ?? null;
+    }
+    async resolveKanRobbery(seat, tile, kind) {
+      const candidates = this.kanRobbers(seat, tile, kind);
+      if (!candidates.length) return false;
+      this.emit(RiichiMsg.ENtfPlayCard, this.buildPlayCard(seat, tile, kind === "ankan" ? PlayAction.AnGang : kind === "nuki" ? PlayAction.BaBei : PlayAction.PengGang, false,
+        this.players.map(q => candidates.includes(q.seat) ? [PlayAction.Hu, PlayAction.Guo] : [])));
+      const winners = [];
+      for (const s of candidates) {
+        let choice;
+        if (!this.isAiSeat(this.players[s])) {
+          this._processing = false;
+          choice = await this.waitHuman("claim");
+        } else choice = this.aiClaim(s, seat, tile, [PlayAction.Hu, PlayAction.Guo]);
+        if (choice && choice.action === PlayAction.Hu) winners.push(s);
+        else this.markPassedRon(this.players[s]);
+      }
+      if (!winners.length) return false;
+      // The declaration is robbed before the pon/kan count/dora are committed.
+      const p = this.players[seat];
+      const i = p.hand.findIndex(t => kindOf2(t) === kindOf2(tile));
+      if (i >= 0) p.hand.splice(i, 1);
+      await this.winRons(winners, seat, tile, {chankan: kind === "kakan", haidi: false});
+      return true;
+    }
+    flushKanDora() {
+      if (this.pendingKanDora != null) {
+        this.revealKanDora(this.pendingKanDora);
+        this.pendingKanDora = null;
+      }
+    }
+    scheduleKanDora(kind) {
+      this.flushKanDora();
+      if (this.tenhouRules && kind !== "ankan") this.pendingKanDora = this.kanCount;
+      else this.revealKanDora();
+    }
+    revealKanDora(i = this.kanCount) {
+      const baoBase = this.sanma && !this.tenhouRules ? 8 : 4;
       // 三麻/四麻宝牌指示牌均5张（initial + 4 kan dora），布局一致，仅起始偏移不同（三麻8/四麻4）
       const maxI = 4;
       if (i >= 1 && i <= maxI && this.deadWall[baoBase + 2 * i] != null) {
@@ -8892,17 +9035,28 @@
       };
     }
     // 吃碰后的食替禁止牌（同样是牌种编码 copy=0，实机样本 [440,310,280,380,320]）
-    cantPlays(p, action, meldTiles) {
+    validClaimTiles(p, action, card, otherCards = []) {
+      if (action !== PlayAction.Chi && action !== PlayAction.Peng) return true;
+      const used = otherCards.length ? otherCards : action === PlayAction.Chi ? this.chiTiles(p,card) : p.hand.filter(t=>kindOf2(t)===kindOf2(card)).slice(0,2);
+      if (!used || used.length !== 2 || new Set(used).size !== 2 || used.some(t=>!p.hand.includes(t))) return false;
+      const ds = [...used,card].map(decodeId).sort((a,b)=>a.rank-b.rank);
+      if (action === PlayAction.Peng && used.some(t=>kindOf2(t)!==kindOf2(card))) return false;
+      if (action === PlayAction.Chi && (ds[0].suit===4 || ds.some(d=>d.suit!==ds[0].suit) || ds[1].rank!==ds[0].rank+1 || ds[2].rank!==ds[1].rank+1)) return false;
+      const rest=p.hand.filter(t=>!used.includes(t));
+      const forbidden=this.cantPlays({...p,hand:rest},action,[...used,card],card);
+      return rest.some(t=>!forbidden.includes(kindOf2(t)*10));
+    }
+    cantPlays(p, action, meldTiles, claimed = this.lastDiscard ? this.lastDiscard.card : null) {
       if (action !== PlayAction.Chi && action !== PlayAction.Peng) return [];
       const out = /* @__PURE__ */ new Set();
-      const claimed = this.lastDiscard ? this.lastDiscard.card : null;
       if (claimed != null) out.add(kindOf2(claimed));
       if (action === PlayAction.Chi && meldTiles.length === 3) {
         const ranks = meldTiles.map((t) => decodeId(t).rank).sort((a, b) => a - b);
         const suit = decodeId(meldTiles[0]).suit;
         if (ranks[2] - ranks[0] === 2) {
-          if (ranks[0] > 1) out.add(suit * 10 + (ranks[0] - 1));
-          if (ranks[2] < 9) out.add(suit * 10 + (ranks[2] + 1));
+          const rank = claimed == null ? null : decodeId(claimed).rank;
+          if (rank === ranks[2] && ranks[0] > 1) out.add(suit * 10 + (ranks[0] - 1));
+          if (rank === ranks[0] && ranks[2] < 9) out.add(suit * 10 + (ranks[2] + 1));
         }
       }
       return [...out].filter((k) => p.hand.some((t) => kindOf2(t) === k)).map((k) => k * 10);
@@ -8914,6 +9068,7 @@
       await this.endHand({ type: "tsumo", winner: seat, loser: null, card: p.drawnTile, win: w });
     }
     async winRon(seat, loser, card, extra = {}) {
+      this.cancelPendingRiichi(loser);
       const p = this.players[seat];
       const w = calcWin(
         p.hand,
@@ -8923,9 +9078,75 @@
       );
       await this.endHand({ type: "ron", winner: seat, loser, card, win: w });
     }
+    cancelPendingRiichi(seat) {
+      const p = this.players[seat];
+      if (!p.riichiPending) return;
+      p.riichiPending = false;
+      p.riichi = false;
+      p.doubleRiichi = false;
+      p.ippatsu = false;
+      p.score += 1000;
+      this.riichiSticks--;
+    }
+    async winRons(seats, loser, card, extra = {}) {
+      const winners = [...new Set(seats)].sort((a,b) => (a-loser+this.playersN)%this.playersN - (b-loser+this.playersN)%this.playersN);
+      this.cancelPendingRiichi(loser);
+      if (winners.length === 1) return this.winRon(winners[0], loser, card, extra);
+      if (this.handEnded) return;
+      let scores = this.players.map(p => p.score);
+      const details = new Map();
+      let message;
+      // Reuse the single-win settlement on isolated state. Emit exactly one terminal packet.
+      for (let i=0; i<winners.length; i++) {
+        const s = winners[i], p = this.players[s];
+        const child = Object.create(this);
+        child.players = this.players.map((q,j) => ({...q, score:scores[j]}));
+        child.handEnded = false;
+        child.honba = i === 0 ? this.honba : 0;
+        child.riichiSticks = i === 0 ? this.riichiSticks : 0;
+        child.decideGameOver = () => false;
+        child.emit = (type, msg) => { if(type === RiichiMsg.ENtfGameStop) message = msg; };
+        child.finishHand = async (_over,_continues,next) => { scores=next; };
+        const w = calcWin(p.hand,p.melds,this.akaSet,{...this.winOpts(p,true,card),...extra});
+        await GameEngine.prototype.endHand.call(child,{type:"ron",winner:s,loser,card,win:w});
+        details.set(s,message.userInfos[s]);
+      }
+      const continues = winners.includes(this.dealerSeat);
+      const over = this.decideGameOver(continues,scores);
+      message.huSeats = winners;
+      message.isFinal = over;
+      message.liBaoPreCards = winners.some(s=>this.players[s].riichi) ? this.uraIndicators.slice() : [];
+      message.userInfos = message.userInfos.map((q,s)=>({... (details.get(s) || q), score:scores[s],changeScore:scores[s]-this.players[s].scoreAtStart}));
+      this.handEnded = true;
+      this.riichiSticks = 0;
+      this.emit(RiichiMsg.ENtfGameStop,message);
+      await this.finishHand(over,continues,scores);
+    }
     async exhaustiveDraw() {
       const tenpai = this.players.map((p) => this.isTenpai(p));
-      await this.endHand({ type: "draw", liuJuType: LiuJuType.HuangPai, tenpai });
+      const nagashi = this.players.filter(p => !p.discardCalled && p.discards.length > 0 && p.discards.every(t => {
+        const d = decodeId(t); return d.suit === 4 || d.rank === 1 || d.rank === 9;
+      })).map(p=>p.seat);
+      await this.endHand({ type: "draw", liuJuType: LiuJuType.HuangPai, tenpai, nagashi });
+    }
+    recordResponsibility(p, card, donor) {
+      const kind = kindOf2(card);
+      const exposed = new Set(p.melds.filter(m=>m.type === "pon" || m.type === "kan").map(m=>kindOf2(m.tiles[0])));
+      p.pao = p.pao || {};
+      if (kind >= 45 && kind <= 47 && [45,46,47].every(k=>exposed.has(k)) && p.pao.daisangen == null) p.pao.daisangen = donor;
+      if (kind >= 41 && kind <= 44 && [41,42,43,44].every(k=>exposed.has(k)) && p.pao.daisuushi == null) p.pao.daisuushi = donor;
+    }
+    responsibilitySeat(p, win) {
+      if (!win.yakuman || !p.pao) return null;
+      if (win.yaku["大三元"] && p.pao.daisangen != null) return p.pao.daisangen;
+      if (win.yaku["大四喜"] && p.pao.daisuushi != null) return p.pao.daisuushi;
+      return null;
+    }
+    awardFinalSticks(over, scores) {
+      if (!over || !this.tenhouRules || !this.riichiSticks) return;
+      const top = scores.indexOf(Math.max(...scores));
+      scores[top] += this.riichiSticks * 1000;
+      this.riichiSticks = 0;
     }
     async abortiveDraw(liuJuType, seat) {
       await this.endHand({
@@ -8945,18 +9166,28 @@
       let dealerContinues = false;
       let ui = [];
       if (res.type === "draw") {
-        if (!res.noPenalty) {
+        if (res.nagashi && res.nagashi.length) {
+          // Tenhou treats nagashi as a replacement for noten payments, not a win:
+          // no honba/riichi award, and dealer continuation still depends on tenpai.
+          for (const winner of res.nagashi) for (let s=0;s<n;s++) {
+            if (s === winner) continue;
+            const payment = winner === this.dealerSeat || s === this.dealerSeat ? 4000 : 2000;
+            scores[s] -= payment; scores[winner] += payment;
+          }
+        } else if (!res.noPenalty) {
           const tenpaiSeats = res.tenpai.map((t, i) => t ? i : -1).filter((i) => i >= 0);
           const notenSeats = res.tenpai.map((t, i) => t ? -1 : i).filter((i) => i >= 0);
           if (tenpaiSeats.length && notenSeats.length) {
-            const per = Math.floor(3e3 / tenpaiSeats.length);
-            const pay2 = Math.floor(3e3 / notenSeats.length);
+            const pool = this.sanma && this.tenhouRules ? 2000 : 3000;
+            const per = Math.floor(pool / tenpaiSeats.length);
+            const pay2 = Math.floor(pool / notenSeats.length);
             for (const s of tenpaiSeats) scores[s] += per;
             for (const s of notenSeats) scores[s] -= pay2;
           }
         }
         dealerContinues = res.noPenalty ? true : !!res.tenpai[this.dealerSeat];
-        const gameOver2 = this.decideGameOver(dealerContinues, scores);
+        const gameOver2 = this.decideGameOver(dealerContinues, scores, {abortive:!!res.noPenalty});
+        this.awardFinalSticks(gameOver2, scores);
         ui = this.buildStopUserInfos(scores, null, null, res.tenpai, gameOver2);
         this.emit(RiichiMsg.ENtfGameStop, {
           huSeats: [],
@@ -8966,7 +9197,7 @@
           isFinal: gameOver2,
           userInfos: ui,
           baoPreCards: this.doraIndicators.slice(),
-          liuJuManGuanSeats: [],
+          liuJuManGuanSeats: res.nagashi || [],
           liuJuType: res.liuJuType,
           liuJuSeat: res.liuJuSeat != null ? res.liuJuSeat : -1,
           duiCards: [],
@@ -8975,7 +9206,7 @@
           stopType: 0,
           winningStreak: 0
         });
-        await this.finishHand(gameOver2, dealerContinues, scores);
+        await this.finishHand(gameOver2, dealerContinues, scores, true);
         return;
       }
       const winner = res.winner;
@@ -8983,18 +9214,23 @@
       const isDealerWin = winner === this.dealerSeat;
       const doraBreak = this.countDora(winP, res.type === "ron" ? res.card : null);
       let extraFan = doraBreak.babei + doraBreak.babeiAsDora;
-      // 拔北后摸岭上牌和牌：riichi 库(yaku.js 嶺上開花)要求副露中存在杠才给，
-      // 而拔北副露只有 1 张北、hasKantsu=false -> 库漏算岭上开花。此处补记 1 番
-      const hasKan = winP.melds.some((m) => m.type === "ankan" || m.type === "kan");
-      if (res.type === "tsumo" && winP.rinshan && !hasKan) {
-        extraFan += 1;
-        (res.win.yaku || (res.win.yaku = {}))["\u5DBA\u4E0A\u958B\u82B1"] = "1\u98DC";
-      }
+      // Replacement-draw yaku is evaluated in calcWin, including nuki without a kan.
       const w = this.applyExtraFan(res.win, extraFan, isDealerWin);
       const pay = new Array(n).fill(0);
       const purePay = new Array(n).fill(0);
       let gain = 0, pureGain = 0;
-      if (res.type === "tsumo") {
+      const pao = this.responsibilitySeat(winP, w);
+      if (pao != null) {
+        // Responsibility covers the complete compound yakuman under Tenhou rules.
+        const total = 8000 * w.yakuman * (isDealerWin ? 6 : 4);
+        if (res.type === "ron" && res.loser !== pao) {
+          purePay[pao] = total / 2; purePay[res.loser] = total / 2;
+        } else purePay[pao] = total;
+        for (let s=0;s<n;s++) pay[s] = purePay[s];
+        const honbaPayment = this.honba * (this.sanma && this.tenhouRules ? 200 : 300);
+        pay[pao] += honbaPayment;
+        pureGain = total; gain = total + honbaPayment;
+      } else if (res.type === "tsumo") {
         for (let s = 0; s < n; s++) {
           if (s === winner) continue;
           const base = isDealerWin ? w.oya[0] || 0 : s === this.dealerSeat ? w.ko[0] || 0 : w.ko[1] || 0;
@@ -9005,7 +9241,7 @@
         }
       } else {
         const base = w.ten || 0;
-        pay[res.loser] = base + this.honba * 300;
+        pay[res.loser] = base + this.honba * (this.sanma && this.tenhouRules ? 200 : 300);
         purePay[res.loser] = base;
         gain = pay[res.loser];
         pureGain = base;
@@ -9179,9 +9415,18 @@
       }
       return out;
     }
-    decideGameOver(dealerContinues, scores) {
+    decideGameOver(dealerContinues, scores, {abortive = false} = {}) {
       if (scores.some((s) => s < 0)) return true;
       if (this.handIndex + 1 >= this.maxHands) return true;
+      if (this.tenhouRules) {
+        if (abortive) return false;
+        const target = this.sanma ? 40000 : 30000;
+        const last = this.juNum === this.playersN - 1;
+        const top = scores.indexOf(Math.max(...scores));
+        if (this.roundWind < this.matchLength || this.roundWind === this.matchLength && !last) return false;
+        if (dealerContinues) return top === this.dealerSeat && scores[top] >= target;
+        return scores[top] >= target || this.roundWind > this.matchLength && last;
+      }
       // 1位必要点数：四麻 30000 / 三麻 40000（用户指定规则）
       const necessary = this.playersN === 3 ? 40000 : 30000;
       const top = Math.max.apply(null, scores);
@@ -9208,9 +9453,20 @@
       console.log("[riichi] decideGameOver: " + wind + ju + " 庄家=seat" + this.dealerSeat + " 顶部=" + top + " 必要点=" + necessary + " 达成=" + topMeets + " → " + (topMeets ? "\u7EC8\u5C40" : "\u5357\u5165"));
       return topMeets;
     }
-    async finishHand(gameOver, dealerContinues, scores) {
+    async finishHand(gameOver, dealerContinues, scores, wasDraw = false) {
       this.scores = scores.slice();
       this.handIndex += 1;
+      if (this.tenhouRules) {
+        this.honba = dealerContinues || wasDraw ? this.honba + 1 : 0;
+        if (!dealerContinues) {
+          this.dealerSeat = this.nextSeat(this.dealerSeat);
+          this.juNum++;
+          if (this.juNum === this.playersN) { this.juNum = 0; this.roundWind++; }
+        }
+        if (gameOver) { this.matchOver = true; this.finished = true; return; }
+        await this._d(this.T.hand);
+        return;
+      }
       if (dealerContinues) {
         this.honba += 1;
         if (!gameOver && this.roundWind === 1 && this.juNum + 1 >= this.playersN) {
@@ -9221,7 +9477,7 @@
           // 故庄家必须保持（连庄进南场），不能重置为 0，否则会变成下家坐庄。
         }
       } else {
-        this.honba = 0;
+        this.honba = wasDraw ? this.honba + 1 : 0;
         this.juNum += 1;
         this.dealerSeat = this.nextSeat(this.dealerSeat);
       }
@@ -9483,9 +9739,11 @@
       this.opts = {
         players: opts.players != null ? opts.players : 4,
         akaCount: opts.akaCount != null ? opts.akaCount : 1,
-        startScore: opts.startScore != null ? opts.startScore : 25e3,
+        tenhouRules: !!opts.tenhouRules,
+        matchLength: opts.matchLength,
+        startScore: opts.startScore != null ? opts.startScore : opts.tenhouRules && opts.players === 3 ? 35e3 : 25e3,
         // 一局东风战的手数上限：三麻 12、四麻 16（含连庄）
-        maxHands: opts.maxHands != null ? opts.maxHands : opts.players === 3 ? 12 : 16,
+        maxHands: opts.maxHands != null ? opts.maxHands : opts.tenhouRules ? Infinity : opts.players === 3 ? 12 : 16,
         // AI 思考延迟倍率。0 = 瞬间（自测用），1 = 正常观感
         speed: opts.speed != null ? opts.speed : 1,
         seed: opts.seed,
@@ -9528,6 +9786,8 @@
       const seed = o.seed != null ? o.seed : Math.random() * 2147483647 | 0;
       const eng = new GameEngine({
         players: o.players,
+        tenhouRules: o.tenhouRules,
+        matchLength: o.matchLength,
         akaCount: o.akaCount,
         startScore: o.startScore,
         maxHands: o.maxHands,

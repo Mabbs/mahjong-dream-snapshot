@@ -45,7 +45,10 @@
       background-color: black;  /* 确保 iframe 也有黑色背景 */
     }
     #Frame {
-      border-style: unset;
+      position: absolute;
+      top: 0;
+      left: 0;
+      border: 0;
       display: block
     }
   </style>
@@ -105,14 +108,8 @@
   });
 
   window.addEventListener('resize', function () {
-    setTimeout(function() {
-      console.log("等待结束，执行后续操作！");
-      // 这里可以放置需要执行的代码
-      Frame.contentWindow.postMessage('refreshMethod', '*');
-
-      unityRefreshOrientation()
-    }, 300);
-    
+    unityRefreshOrientation();
+    Frame.contentWindow.postMessage('refreshMethod', '*');
   });
 
   window.addEventListener('message', function(event) {

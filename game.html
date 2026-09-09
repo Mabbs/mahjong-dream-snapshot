@@ -225,39 +225,10 @@
       }
 
       function unityContainerResize(){
-        document.body.offsetHeight;
-        var w =  Math.min(window.innerWidth, document.body.clientWidth),
-        h = Math.min(window.innerHeight, document.body.clientHeight),
-        ratio = 21/9,
-        r = w/h;
-        var setW = w, setH = h, setTop = 0, setLeft = 0;
-        if(r > ratio){
-          setW = h * ratio;
-          setLeft = (w - setW) / 2;
-        }
-        else  if (r >= 1) {
-            setW = w;
-            setH = h;
-        }
-        else {
-          setH = w;
-          setTop = (h - setH) / 2;
-        }
-        
-        console.log("source size window-", window.innerWidth, ":", window.innerHeight, ", body-", document.body.clientWidth, ":", document.body.clientHeight);
-        console.log("fianl size ", setLeft, ":", setTop, "-", w, ":", h);
-        
-        canvas.style.width = (setW || w) + 'px';
-        canvas.style.height = (setH || h) + 'px';
-        canvas.style.top = (setTop || 0) + 'px';
-        canvas.style.left = (setLeft || 0) + 'px';
-        
-        if (isInPhone) {
-            container.style.width = (setW || w) + 'px';
-            container.style.height = (setH || h) + 'px';
-            container.style.top = (setTop || 0) + 'px';
-            container.style.left = (setLeft || 0) + 'px';
-        }
+        // Unity resizes its render target to the canvas DOM size.
+        // Fill the iframe viewport; avoid aspect caps and inline-canvas baseline gaps.
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
       }
 
       window.addEventListener('message', function(event) {
@@ -267,7 +238,7 @@
       });
 
 
-      // window.addEventListener('resize',unityContainerResize)
+      window.addEventListener('resize', unityContainerResize)
       unityContainerResize()
 
     </script>
